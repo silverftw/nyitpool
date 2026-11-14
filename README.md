@@ -43,11 +43,14 @@ Connect the repo to Cloudflare **Workers Builds** so every `git push` to `main` 
 3. Branch: `main` · Build command: *(none)* · Deploy command: `npx wrangler deploy`.
 4. Push — watch the build in the dashboard; the worker URL updates on every push.
 
-## API (placeholder)
+## API
 
 - `GET /api/health` — liveness probe.
-- `GET /api/queue` — list queue entries (D1).
+- `GET /api/queue` — list live entries (playing first, then waiting by join order; done entries hidden).
 - `POST /api/queue` `{ "team_name": "...", "players": "A · B" }` — join the queue.
+- `POST /api/queue/next` — finish the current game, promote the first waiting team.
+- `PATCH /api/queue/:id` `{ "status": "waiting" | "playing" | "done" }` — set an entry's status (only one team may be `playing`).
+- `DELETE /api/queue/:id` — remove an entry.
 
 ## Production
 

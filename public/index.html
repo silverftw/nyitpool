@@ -105,20 +105,45 @@
   .mode h2{margin:0;font-size:clamp(1.5rem,4vw,2.4rem);letter-spacing:.01em}
   .mode p{margin:0;color:var(--muted);max-width:36ch;text-align:center;line-height:1.55}
   .mode:hover,.mode:focus-visible{transform:translateY(-4px);border-color:var(--mc);box-shadow:0 14px 40px -18px var(--mc)}
-  .soon-badge{
-    font-size:.65rem;font-weight:800;letter-spacing:.18em;color:var(--muted);
-    border:1px dashed var(--muted);border-radius:999px;padding:4px 12px;
-  }
   .modesel-wrap{min-height:100dvh;display:flex;flex-direction:column}
   .modesel-top{display:flex;align-items:center;gap:14px;padding:16px clamp(16px,4vw,56px) 0;flex-wrap:wrap}
   .modesel-top h2{margin:0;font-size:clamp(1.2rem,2.6vw,1.8rem)}
   .queue-wrap{
-    min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;
-    gap:14px;padding:24px;text-align:center;
+    min-height:100dvh;display:flex;flex-direction:column;gap:14px;
+    padding:16px clamp(16px,4vw,56px) calc(16px + env(safe-area-inset-bottom));
+    max-width:860px;margin:0 auto;
   }
-  .queue-wrap h2{margin:0;font-size:clamp(2rem,6vw,4rem);font-weight:900}
-  .queue-wrap p{margin:0;color:var(--muted);font-size:clamp(1rem,2.4vw,1.4rem);max-width:44ch}
-  .queue-wrap .btn-primary{margin-top:18px}
+  .queue-top{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .queue-top h2{margin:0;font-size:clamp(1.3rem,3vw,2rem)}
+  .q-list{flex:1;display:flex;flex-direction:column;gap:10px;overflow-y:auto;min-height:0}
+  .q-row{
+    display:flex;align-items:center;gap:14px;background:var(--panel);
+    border:1px solid var(--line);border-radius:14px;padding:12px 16px;
+  }
+  .q-row .pos{
+    flex-shrink:0;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
+    font-weight:800;color:var(--muted);border:1px solid var(--line);
+  }
+  .q-row .info,.q-now .info{flex:1;min-width:0}
+  .q-row .tname2,.q-now .tname2{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .q-row .tname2{font-size:1.05rem}
+  .q-row .pl,.q-now .pl{color:var(--muted);font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .q-now{
+    border:3px solid var(--ok);border-radius:18px;padding:16px 20px;
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    background:linear-gradient(180deg,rgba(52,211,153,.1),transparent 70%),var(--panel);
+  }
+  .q-now .chip-now{
+    font-size:.68rem;font-weight:800;letter-spacing:.18em;color:var(--ok);
+    border:1px solid var(--ok);border-radius:999px;padding:4px 12px;
+  }
+  .q-now .tname2{font-size:clamp(1.2rem,3vw,1.8rem);font-weight:800}
+  .q-join{display:flex;gap:10px;flex-wrap:wrap}
+  .q-join .name-input{flex:1 1 180px}
+  .q-join .btn-primary{flex-shrink:0}
+  .q-actions{display:flex;gap:8px}
+  .q-empty{color:var(--muted);text-align:center;padding:clamp(20px,6vh,60px) 16px;font-size:1.05rem}
+  .q-empty .big{display:block;font-size:clamp(1.4rem,4vw,2.2rem);font-weight:800;color:var(--text);margin-bottom:8px}
   .homefoot{padding:10px 16px 22px}
 
   /* ---------- screen 2: config ---------- */
@@ -392,7 +417,7 @@
         <h2>Table Timer</h2>
         <p>Shot clocks &amp; chess-clock game banks for the table.</p>
       </button>
-      <button class="mode" id="btn-tableq" type="button" style="--mc:var(--t2)" aria-label="Table Queue — coming soon">
+      <button class="mode" id="btn-tableq" type="button" style="--mc:var(--t2)">
         <svg viewBox="0 0 24 24" width="60" height="60" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
           <circle cx="5.2" cy="6" r="2.1"/>
           <circle cx="5.2" cy="12" r="2.1"/>
@@ -400,8 +425,7 @@
           <path d="M10.4 6h8.6M10.4 12h8.6M10.4 18h8.6"/>
         </svg>
         <h2>Table Queue</h2>
-        <p>Who's up next — live queue of players in line.</p>
-        <span class="soon-badge">COMING SOON</span>
+        <p>Who's up next — live queue of teams waiting for the table.</p>
       </button>
     </div>
     <footer class="fine center homefoot">Keyboard-first · <kbd>SPACE</kbd> / <kbd>ENTER</kbd> driven · screen stays awake during play</footer>
@@ -442,14 +466,26 @@
     </div>
   </section>
 
-  <!-- ============ Screen 1c: table queue placeholder ============ -->
+  <!-- ============ Screen 1c: table queue (live) ============ -->
   <section id="screen-queue" class="screen">
     <div class="queue-wrap">
-      <span class="soon-badge">COMING SOON</span>
-      <h2>Table Queue</h2>
-      <p>See who's up next at the table — live queue of players in line.</p>
-      <p class="fine">Arriving in a future update, backed by the Cloudflare backend.</p>
-      <button id="btn-queue-back" class="btn-primary big" type="button">← Back to NYIT Pool</button>
+      <div class="queue-top">
+        <button id="btn-queue-back" class="btn-ghost" type="button">← Back to NYIT Pool</button>
+        <h2>Table Queue</h2>
+        <span id="queue-count" class="badge soft">—</span>
+      </div>
+
+      <div id="queue-now" class="q-now" hidden></div>
+
+      <div id="queue-list" class="q-list"></div>
+
+      <p id="queue-error" class="fine center" hidden></p>
+
+      <form id="queue-join" class="q-join" autocomplete="off">
+        <input id="q-team" class="name-input" type="text" maxlength="32" placeholder="Team name" aria-label="Team name" required>
+        <input id="q-players" class="name-input" type="text" maxlength="128" placeholder="Players (e.g. Alice · Bob)" aria-label="Players">
+        <button class="btn-primary" type="submit">Join queue</button>
+      </form>
     </div>
   </section>
 
@@ -637,13 +673,16 @@ const anySolo = () => settings.rosters[0].length === 1 || settings.rosters[1].le
 
 /* ==================== screen router ==================== */
 function showScreen(name) {
-  if (app.screen === 'timer' && name !== 'timer') {
+  const from = app.screen;
+  if (from === 'timer' && name !== 'timer') {
     stopLoop();
     ScreenLock.release();
     hideOverlay();
     hideBanner();
     pauseGlowClear();
   }
+  if (name === 'queue') Queue.start();
+  else if (from === 'queue') Queue.stop();
   app.screen = name;
   $$('.screen').forEach(s => s.classList.toggle('active', s.id === 'screen-' + name));
   if (name === 'config') renderConfig();
@@ -658,6 +697,111 @@ $('#btn-queue-back').addEventListener('click', () => showScreen('home'));
 $('#btn-modesel-back').addEventListener('click', () => showScreen('home'));
 $('#btn-mode-shot').addEventListener('click', () => { Sound.ensure(); app.mode = 'shot'; showScreen('config'); });
 $('#btn-mode-game').addEventListener('click', () => { Sound.ensure(); app.mode = 'game'; showScreen('config'); });
+
+/* ==================== table queue (live, backed by the Worker /api/queue) ==================== */
+const Queue = (() => {
+  const JSON_HDR = { 'content-type': 'application/json' };
+  let pollT = 0;
+  let rows = [];
+  let offline = false;
+
+  async function api(path, opts) {
+    const res = await fetch('/api/queue' + path, opts);
+    if (!res.ok) throw new Error('API ' + res.status);
+    return res.json();
+  }
+
+  async function refresh() {
+    try {
+      const data = await api('');
+      rows = data.queue || [];
+      offline = false;
+    } catch {
+      offline = true;
+    }
+    render();
+  }
+
+  async function act(path, opts) {
+    try { await api(path, opts); } catch { /* offline state renders on refresh */ }
+    await refresh();
+  }
+
+  function render() {
+    const list = $('#queue-list');
+    const nowBox = $('#queue-now');
+    const errBox = $('#queue-error');
+    list.innerHTML = '';
+
+    errBox.hidden = !offline;
+    if (offline) errBox.textContent = "⚠️ Can't reach the queue service — check your connection.";
+
+    const playing = rows.filter(r => r.status === 'playing');
+    const waiting = rows.filter(r => r.status === 'waiting');
+    $('#queue-count').textContent = playing.length
+      ? (waiting.length ? `${waiting.length} in line` : 'table covered')
+      : (waiting.length ? `${waiting.length} in line` : 'table free');
+
+    nowBox.hidden = !playing.length;
+    if (playing.length) {
+      const p = playing[0];
+      nowBox.innerHTML = '';
+      const info = el('div', 'info');
+      info.append(el('div', 'tname2', p.team_name));
+      if (p.players) info.append(el('div', 'pl', p.players));
+      const finish = el('button', 'btn-primary', 'Finish — call next');
+      finish.type = 'button';
+      finish.addEventListener('click', () => act('/next', { method: 'POST' }));
+      nowBox.append(el('span', 'chip-now', 'NOW PLAYING'), info, finish);
+    }
+
+    if (!waiting.length && !offline) {
+      const empty = el('div', 'q-empty');
+      empty.innerHTML = playing.length
+        ? 'Nobody waiting — the table is covered.'
+        : '<span class="big">Table is free</span>Nobody in line — join up!';
+      list.append(empty);
+    }
+    waiting.forEach((r, k) => {
+      const row = el('div', 'q-row');
+      const info = el('div', 'info');
+      info.append(el('div', 'tname2', r.team_name));
+      if (r.players) info.append(el('div', 'pl', r.players));
+      const actions = el('div', 'q-actions');
+      const up = el('button', 'btn-ghost', 'Call up');
+      up.type = 'button';
+      up.setAttribute('aria-label', `Call up ${r.team_name}`);
+      up.addEventListener('click', () =>
+        act('/' + r.id, { method: 'PATCH', headers: JSON_HDR, body: '{"status":"playing"}' }));
+      const rm = el('button', 'rm-btn', '×');
+      rm.type = 'button';
+      rm.setAttribute('aria-label', `Remove ${r.team_name}`);
+      rm.addEventListener('click', () => act('/' + r.id, { method: 'DELETE' }));
+      actions.append(up, rm);
+      row.append(el('span', 'pos', String(k + 2)), info, actions);
+      list.append(row);
+    });
+  }
+
+  $('#queue-join').addEventListener('submit', e => {
+    e.preventDefault();
+    const team = $('#q-team').value.trim();
+    const players = $('#q-players').value.trim();
+    if (!team) return;
+    $('#q-team').value = '';
+    $('#q-players').value = '';
+    act('', { method: 'POST', headers: JSON_HDR, body: JSON.stringify({ team_name: team, players }) });
+  });
+
+  function start() {
+    refresh();
+    clearInterval(pollT);
+    pollT = setInterval(refresh, 5000);
+  }
+  function stop() { clearInterval(pollT); pollT = 0; }
+
+  return { start, stop };
+})();
 
 /* ==================== screen 2: config / handicaps ==================== */
 /* difficulty palette — preset chips glow red → yellow → green → light blue, left to right */
