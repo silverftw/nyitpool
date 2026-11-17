@@ -271,6 +271,8 @@ async function replayAllRatings(db) {
     rating: arr.reduce((s, x) => s + x.rating, 0) / (arr.length || 1),
     rd: arr.reduce((s, x) => s + x.rd, 0) / (arr.length || 1),
   });
+  const r1 = v => Math.round(v * 10) / 10;
+  const ctxStmts = []; // per-player rating_before/after for match history
   for (const m of matches) {
     const ps = byMatch.get(m.id) || [];
     const t1 = ps.filter(p => p.team === 1).map(p => state.get(p.user_id)).filter(Boolean);
@@ -282,12 +284,20 @@ async function replayAllRatings(db) {
       st.last = m.played_at;
       if (m.match_type === 'ranked') {
         const opp = p.team === 1 ? avg(t2) : avg(t1);
+        const before = st.rating;
         const after = rate(st, [{ rating: opp.rating, rd: opp.rd, score: won }]);
         st.rating = after.rating; st.rd = after.rd; st.vol = after.vol;
         won ? st.rw++ : st.rl++;
+        ctxStmts.push(db.prepare(
+          'UPDATE match_players SET rating_before = ?, rating_after = ? WHERE match_id = ? AND user_id = ?'
+        ).bind(r1(before), r1(after.rating), m.id, p.user_id));
       } else {
         won ? st.cw++ : st.cl++;
       }
+    }
+    if (m.match_type !== 'ranked') { // casual rows carry no rating context — clear any stale values
+      ctxStmts.push(db.prepare(
+        'UPDATE match_players SET rating_before = NULL, rating_after = NULL WHERE match_id = ?').bind(m.id));
     }
   }
   const stmts = [];
@@ -296,11 +306,11 @@ async function replayAllRatings(db) {
       `UPDATE users SET glicko_rating = ?, glicko_rd = ?, glicko_vol = ?,
        ranked_wins = ?, ranked_losses = ?, casual_wins = ?, casual_losses = ?,
        last_played_at = ? WHERE id = ?`
-    ).bind(Math.round(st.rating * 10) / 10, Math.round(st.rd * 10) / 10,
-      Math.round(st.vol * 10000) / 10000,
+    ).bind(r1(st.rating), r1(st.rd), Math.round(st.vol * 10000) / 10000,
       st.rw, st.rl, st.cw, st.cl, st.last, id));
   }
-  if (stmts.length) await db.batch(stmts);
+  const all = [...stmts, ...ctxStmts];
+  for (let i = 0; i < all.length; i += 100) await db.batch(all.slice(i, i + 100)); // D1-friendly chunks
   return stmts.length; // users recomputed
 }
 
@@ -319,6 +329,7 @@ async function commitMatch(db, pending) {
   }]));
 
   const stmts = [];
+  const ctxStmts = []; // per-player rating_before/after for the new match rows
   let ratingDelta = null;
 
   if (pending.match_type === 'ranked') {
@@ -341,6 +352,11 @@ async function commitMatch(db, pending) {
         Math.round(after.rating * 10) / 10, Math.round(after.rd * 10) / 10,
         Math.round(after.vol * 10000) / 10000,
         won, 1 - won, Date.now(), u.id));
+      ctxStmts.push(db.prepare(
+        `UPDATE match_players SET rating_before = ?, rating_after = ?
+         WHERE match_id = (SELECT MAX(id) FROM matches) AND user_id = ?`
+      ).bind(
+        Math.round(u.glicko_rating * 10) / 10, Math.round(after.rating * 10) / 10, u.id));
     }
     if (deltas.length) ratingDelta = Math.round((deltas.reduce((a, b) => a + b, 0) / deltas.length) * 10) / 10;
   } else {
@@ -361,6 +377,7 @@ async function commitMatch(db, pending) {
     INSERT INTO match_players (match_id, team, user_id, guest_name)
     SELECT (SELECT MAX(id) FROM matches), team, user_id, guest_name
     FROM pending_match_players WHERE pending_match_id = ?`).bind(pending.id));
+  stmts.push(...ctxStmts); // after the match_players INSERT so the rows exist
   stmts.push(db.prepare('DELETE FROM pending_matches WHERE id = ?').bind(pending.id));
   await db.batch(stmts);
   return { committed: true, rating_delta: ratingDelta };
@@ -1040,6 +1057,31 @@ async function handleApi(request, env, url) {
     sql += ' ORDER BY m.played_at DESC LIMIT ?';
     params.push(limit);
     const { results } = await env.DB.prepare(sql).bind(...params).all();
+    // per-player rosters with rating context (rating_before/after, NULL for guests
+    // and for rows predating migration 0006 until the next rating replay)
+    if (results.length) {
+      const ph = results.map(() => '?').join(',');
+      const pr = (await env.DB.prepare(
+        `SELECT mp.match_id, mp.team, mp.user_id, u.nickname, u.username, mp.guest_name,
+                mp.rating_before, mp.rating_after
+         FROM match_players mp LEFT JOIN users u ON u.id = mp.user_id
+         WHERE mp.match_id IN (${ph}) ORDER BY mp.match_id, mp.team, mp.id`
+      ).bind(...results.map(m => m.id)).all()).results;
+      const byMatch = new Map();
+      for (const r of pr) {
+        if (!byMatch.has(r.match_id)) byMatch.set(r.match_id, []);
+        byMatch.get(r.match_id).push({
+          team: r.team,
+          user_id: r.user_id,
+          name: r.user_id ? r.nickname : (r.guest_name != null ? 'Guest: ' + r.guest_name : '?'),
+          username: r.username || null,
+          guest: !r.user_id,
+          rating_before: r.rating_before,
+          rating_after: r.rating_after,
+        });
+      }
+      for (const m of results) m.players = byMatch.get(m.id) || [];
+    }
     return json({ matches: results });
   }
 

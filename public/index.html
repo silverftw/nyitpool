@@ -895,7 +895,7 @@
             <p id="log-msg" class="fine" style="margin:0"></p>
           </form>
 
-          <div class="sec-h">Match history</div>
+          <div class="sec-h">Ranked match history</div>
           <div class="hist-filters" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
             <div class="pick-slot" style="flex:1 1 150px;min-width:0"><input id="hist-player" class="name-input" placeholder="Filter by player" maxlength="24" autocomplete="off" style="width:100%"></div>
             <div class="seg mini" id="hist-time">
@@ -1899,17 +1899,24 @@ const Hub = (() => {
         const card = el('div', 'hist');
         const top = el('div', 'top');
         top.append(el('span', 'when', fmtWhen(m.played_at)));
-        top.append(el('span', 'chip' + (m.match_type === 'ranked' ? ' gold' : ''), m.match_type.toUpperCase()));
+        if (m.match_type !== 'ranked') top.append(el('span', 'chip warn', m.match_type.toUpperCase())); // legacy casual rows
         top.append(el('span', 'chip', m.format));
-        if (m.rating_delta != null) {
+        const hasCtx = Array.isArray(m.players) && m.players.some(p => p.rating_before != null);
+        if (!hasCtx && m.rating_delta != null) { // legacy rows without per-player numbers keep the mean delta
           const d = el('span', 'delta', (m.rating_delta > 0 ? '+' : '') + m.rating_delta);
           if (m.rating_delta < 0) d.style.color = 'var(--danger)';
           top.append(d);
         }
         const result = el('div', 'result');
-        result.append(el('b', 'w', m.winner_team === 1 ? (m.team1 || '?') : (m.team2 || '?')));
+        // "Ana 1587→1608 def. Ben 1502→1487" — rating before → after per registered player
+        const pTxt = p => p.rating_before == null
+          ? p.name
+          : p.name + ' ' + Math.round(p.rating_before) + '→' + Math.round(p.rating_after ?? p.rating_before);
+        const t1 = hasCtx ? m.players.filter(p => p.team === 1).map(pTxt).join(' · ') : (m.team1 || '?');
+        const t2 = hasCtx ? m.players.filter(p => p.team === 2).map(pTxt).join(' · ') : (m.team2 || '?');
+        result.append(el('b', 'w', m.winner_team === 1 ? t1 : t2));
         result.append(el('span', 'sep', 'def.'));
-        result.append(document.createTextNode(m.winner_team === 1 ? (m.team2 || '?') : (m.team1 || '?')));
+        result.append(document.createTextNode(m.winner_team === 1 ? t2 : t1));
         card.append(top, result);
         if (adminPin) { // inline admin tools on committed history
           const tools = el('div', 'adm-tools');
