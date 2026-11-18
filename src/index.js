@@ -1355,10 +1355,20 @@ async function handleApi(request, env, url) {
       return json({ ok: true, status: 'disputed' });
     }
     await env.DB.prepare('UPDATE pending_match_players SET confirmed = 1 WHERE id = ?').bind(me.id).run();
+    await audit(env.DB, 'match_confirm', user.id, 'pending=' + pending.id);
+    // one confirmation from the team facing the submitter logs the match —
+    // teammate confirms alone never commit (submitter & guests auto-confirm)
+    const submitter = await env.DB.prepare(
+      'SELECT team FROM pending_match_players WHERE pending_match_id = ? AND user_id = ?'
+    ).bind(pending.id, pending.submitted_by_user_id).first();
+    if (submitter && me.team !== submitter.team) {
+      const res = await commitMatch(env.DB, pending);
+      await audit(env.DB, 'match_commit', user.id, 'pending=' + pending.id + ' enemy-confirm');
+      return json({ committed: true, rating_delta: res.rating_delta });
+    }
     const left = await env.DB.prepare(
       'SELECT COUNT(*) AS n FROM pending_match_players WHERE pending_match_id = ? AND confirmed = 0'
     ).bind(pending.id).first();
-    await audit(env.DB, 'match_confirm', user.id, 'pending=' + pending.id);
     if (left.n === 0) {
       const res = await commitMatch(env.DB, pending);
       await audit(env.DB, 'match_commit', user.id, 'pending=' + pending.id + ' unanimous');
