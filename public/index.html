@@ -915,7 +915,7 @@
             <ul class="benefits">
               <li><span class="ic" aria-hidden="true">🏷️</span><span>A nickname that sticks<small>Shown on the queue, history and leaderboard with your @username.</small></span></li>
               <li><span class="ic" aria-hidden="true">🎱</span><span>Join the table queue<small>Claim the table solo or with a teammate, straight from your phone.</small></span></li>
-              <li><span class="ic" aria-hidden="true">📋</span><span>Log every match<small>Both sides confirm the result with two taps.</small></span></li>
+              <li><span class="ic" aria-hidden="true">📋</span><span>Log every match<small>One confirmation from the other team logs it.</small></span></li>
               <li><span class="ic" aria-hidden="true">📈</span><span>Rating &amp; leaderboard<small>Glicko-2 rating with a tracked W–L record.</small></span></li>
               <li><span class="ic" aria-hidden="true">🔑</span><span>It follows you<small>Sign back in on any device with just your username + PIN.</small></span></li>
             </ul>
@@ -2305,7 +2305,7 @@ const Hub = (() => {
       msg.style.color = 'var(--text)';
       msg.textContent = r.committed
         ? `✅ Committed${r.rating_delta != null ? ' (Δ ' + r.rating_delta + ')' : ''}.`
-        : `⏳ Submitted — waiting on ${r.awaiting} confirmation(s).`;
+        : `⏳ Submitted — one confirm from the other team logs it.`;
       buildLogSlots();
       refreshHistory();
     } catch (ex) { msg.style.color = 'var(--danger)'; msg.textContent = ex.message; }
@@ -2466,6 +2466,7 @@ const Hub = (() => {
 
     if (n.awaiting_names) frag.append(el('div', 'pend-meta', 'Waiting on: ' + n.awaiting_names));
     if (n.confirmed_names) frag.append(el('div', 'pend-meta', 'Confirmed: ' + n.confirmed_names));
+    if (n.status !== 'disputed') frag.append(el('div', 'pend-meta', 'One confirm from the other team logs the match.'));
     return frag;
   }
 
