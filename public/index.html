@@ -1427,6 +1427,7 @@ const Hub = (() => {
   let me = null;            // {id, username, nickname}
   let adminPin = null;      // session-only admin unlock
   let pollT = 0;
+  const pollStamp = { board: 0, log: 0 }; // last POLL-driven board/log fetch (near-static data: 30s cadence)
   let tab = 'queue';
   const userCache = new Map(); // username(lower) -> id
 
@@ -2804,12 +2805,18 @@ const Hub = (() => {
   })();
 
   /* ---------- lifecycle ---------- */
-  async function refreshAll() {
+  async function refreshAll(polling = false) {
     if (!me) return;
     await refreshQueue();
     if (app.screen === 'adminpage' && adminPin) AdminPage.syncLive(); // keep admin cards honest
-    if (tab === 'board') await refreshBoard();
-    if (tab === 'log') await refreshHistory();
+    // board/log are near-static history — the 5s poll refreshes them at most
+    // every 30s (tab switches and explicit refreshes fetch instantly: polling=false)
+    if (tab === 'board' && (!polling || Date.now() - pollStamp.board >= 30000)) {
+      pollStamp.board = Date.now(); await refreshBoard();
+    }
+    if (tab === 'log' && (!polling || Date.now() - pollStamp.log >= 30000)) {
+      pollStamp.log = Date.now(); await refreshHistory();
+    }
     if (me.guest) return; // no account -> nothing to notify
     try {
       const { notifications } = await api('/notifications');
@@ -2822,9 +2829,17 @@ const Hub = (() => {
     else enterHub();
     refreshQueue(); // public preview even before login
     clearInterval(pollT);
-    pollT = setInterval(() => { if (me) refreshAll(); else refreshQueue(); }, 5000);
+    pollT = setInterval(() => {
+      if (document.hidden) return; // parked tabs don't burn the D1 row budget
+      if (me) refreshAll(true); else refreshQueue();
+    }, 5000);
   }
   function stop() { clearInterval(pollT); pollT = 0; }
+
+  // hidden tabs skip polls — catch up the moment the tab is seen again
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && pollT) { if (me) refreshAll(); else refreshQueue(); }
+  });
 
   buildLogSlots();
   return { start, stop, adminPage: () => AdminPage.refresh() };
