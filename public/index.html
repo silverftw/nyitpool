@@ -318,18 +318,33 @@
   .qrow .pendline{color:var(--muted);font-size:.76rem;font-weight:600}
 
   /* team-up request popup: floats over the queue pane until the owner responds
-     (lives inside the pane, so other tabs hide it for free); right edge clears
-     the feedback fab. #invite-pop is the same card one level up for the
-     "X invited you to their duo" popup, so the two never overlap. */
+     (lives inside the pane, so other tabs hide it for free). The card is
+     CENTERED (equal left/right); on narrow screens extra right padding keeps
+     the buttons clear of the feedback fab. #invite-pop is the same card one
+     level up for the "X invited you to their duo" popup, so the two never
+     overlap, and it rides over a subtle screen dim (#invite-dim) for focus. */
   #teamup-pop, #invite-pop{
-    position:fixed;left:12px;right:74px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:44;
+    position:fixed;left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:44;
     max-width:656px;margin:0 auto;display:none;align-items:center;gap:11px;
     background:linear-gradient(180deg,color-mix(in srgb,var(--felt) 16%,transparent),transparent 74%),var(--panel);
     border:1px solid color-mix(in srgb,var(--felt) 50%,var(--line));
     border-radius:var(--r-lg);padding:12px 13px;box-shadow:var(--shadow);
   }
+  @media (max-width:700px){
+    #teamup-pop, #invite-pop{padding-right:74px} /* fab clearance, card still centered */
+  }
   #invite-pop{bottom:calc(146px + env(safe-area-inset-bottom))}
   #teamup-pop.show, #invite-pop.show{display:flex}
+  /* very minor screen dim behind the invite popup (visual focus only — taps
+     pass through). Plain black was invisible over the dark theme, so the dim
+     also desaturates: the greyed-out screen is what reads at a glance */
+  #invite-dim{
+    position:fixed;inset:0;z-index:43;display:none;pointer-events:none;
+    background:rgba(6,10,14,.3);
+    backdrop-filter:grayscale(45%);
+    -webkit-backdrop-filter:grayscale(45%);
+  }
+  #invite-dim.show{display:block}
   #teamup-pop .tav, #invite-pop .tav{
     flex-shrink:0;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;
     font-weight:900;background:var(--felt);color:var(--feltink);
@@ -930,6 +945,7 @@
           <div id="hub-playing" hidden></div>
           <div id="hub-list"></div>
           <div id="teamup-pop" role="alertdialog" aria-label="Team-up request"></div>
+          <div id="invite-dim" aria-hidden="true"></div>
           <div id="invite-pop" role="alertdialog" aria-label="Duo invite"></div>
           <div id="partner-pop" role="dialog" aria-label="Find a partner"></div>
           <p class="fine" style="text-align:center;margin:2px 0 0">3 votes skips a party · a registered teammate gets a request to accept · guests join instantly</p>
@@ -1847,8 +1863,14 @@ const Hub = (() => {
      stuck mode. Same rebuild-once trick as the team-up popup. */
   function renderInvitePop() {
     const pop = $('#invite-pop');
+    const dim = $('#invite-dim');
     const live = inviteIn;
-    if (!live) { pop.classList.remove('show'); invitePopId = null; return; }
+    if (!live) {
+      pop.classList.remove('show');
+      dim.classList.remove('show');
+      invitePopId = null;
+      return;
+    }
     if (live.id !== invitePopId) {
       invitePopId = live.id;
       pop.innerHTML = '';
@@ -1875,10 +1897,11 @@ const Hub = (() => {
       ? `expires in ${mm}:${String(ss).padStart(2, '0')}`
       : 'expiring…';
     pop.classList.add('show');
+    dim.classList.add('show');
   }
 
   /* find-a-partner sheet for the owner of an incomplete waiting duo: fill P2
-     via a pickup broadcast, a searched queued player, a guest, or leave. The
+     via a pickup broadcast, a searched player (queued or not), a guest, or leave. The
      DOM is rebuilt only when the party (or its pickup state) changes so typed
      input survives polls; the open sub-form is re-applied after a rebuild. */
   function closePartnerPop() {
@@ -1935,7 +1958,7 @@ const Hub = (() => {
       reqForm.id = 'pp-req'; reqForm.hidden = true;
       const reqSlot = el('div', 'pick-slot');
       const reqInput = document.createElement('input');
-      reqInput.placeholder = 'Queued player (@username)';
+      reqInput.placeholder = 'Player (@username)';
       reqInput.maxLength = 20;
       reqSlot.append(reqInput);
       reqForm.append(reqSlot, actBtn('Send', async () => {
