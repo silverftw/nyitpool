@@ -877,10 +877,10 @@ async function handleApi(request, env, url) {
       'SELECT COUNT(*) AS n FROM skip_votes WHERE party_id = ?').bind(id).first();
     await audit(env.DB, 'skip_vote', user.id, 'party=' + id + ' votes=' + n);
     if (n >= 3) {
-      await env.DB.batch([
-        env.DB.prepare("UPDATE queue_parties SET status = 'skipped' WHERE id = ?").bind(id),
-        env.DB.prepare('DELETE FROM skip_votes WHERE party_id = ?').bind(id),
-      ]);
+      // skip_votes rows are KEPT — they're the record of who voted, shown to
+      // the skipped players in their account area (/api/me/skip-history)
+      await env.DB.prepare("UPDATE queue_parties SET status = 'skipped' WHERE id = ?")
+        .bind(id).run();
       await promoteNext(env.DB); // refill the table if a playing party was skipped
       await audit(env.DB, 'party_skipped', null, 'party=' + id + ' by 3 votes');
       return json({ skipped: true, votes: 3 });
@@ -1253,6 +1253,43 @@ async function handleApi(request, env, url) {
       return json({ committed: true, match_type: matchType, rating_delta: res.rating_delta }, 201);
     }
     return json({ committed: false, pending_id: pid, awaiting: others.length }, 201);
+  }
+
+  /* my recent 3-vote skips: parties I was in that got voted off, with the
+     voters named — skip_votes survive the skip precisely for this */
+  if (pathname === '/api/me/skip-history' && method === 'GET') {
+    const user = await requireUser(request, env);
+    const week = Date.now() - 7 * 24 * 3600 * 1000;
+    const { results: rows } = await env.DB.prepare(
+      `SELECT p.id, p.format, MAX(v.created_at) AS skipped_at,
+              p.p1_user_id, p.p1_guest_name, u1.nickname AS p1_nick, u1.username AS p1_user,
+              p.p2_user_id, p.p2_guest_name, u2.nickname AS p2_nick, u2.username AS p2_user
+       FROM queue_parties p
+       JOIN skip_votes v ON v.party_id = p.id
+       LEFT JOIN users u1 ON u1.id = p.p1_user_id
+       LEFT JOIN users u2 ON u2.id = p.p2_user_id
+       WHERE p.status = 'skipped' AND (p.p1_user_id = ?1 OR p.p2_user_id = ?1)
+         AND v.created_at > ?2
+       GROUP BY p.id ORDER BY skipped_at DESC LIMIT 20`
+    ).bind(user.id, week).all();
+    const skips = [];
+    for (const r of rows) {
+      const { results: voters } = await env.DB.prepare(
+        `SELECT u.nickname, u.username FROM skip_votes v
+         JOIN users u ON u.id = v.voter_user_id
+         WHERE v.party_id = ? ORDER BY v.created_at`
+      ).bind(r.id).all();
+      const member = (uid, nick, uname, guest) => uid
+        ? { name: nick, username: uname, registered: true }
+        : guest ? { name: 'Guest: ' + guest, username: null, registered: false } : null;
+      skips.push({
+        party_id: r.id, format: r.format, skipped_at: r.skipped_at,
+        members: [member(r.p1_user_id, r.p1_nick, r.p1_user, r.p1_guest_name),
+                  member(r.p2_user_id, r.p2_nick, r.p2_user, r.p2_guest_name)].filter(Boolean),
+        voters,
+      });
+    }
+    return json({ skips });
   }
 
   if (pathname === '/api/notifications' && method === 'GET') {

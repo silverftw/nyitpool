@@ -228,6 +228,24 @@
   .fs-opt b{display:block;font-size:.95rem}
   .fs-opt small{color:var(--muted);font-size:.78rem}
 
+  /* centered confirm dialog (vote-to-skip etc.) — same veil as the sheets */
+  #confirm-sheet{
+    position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;
+    background:rgba(5,8,12,.72);backdrop-filter:blur(5px);
+    opacity:0;visibility:hidden;transition:.25s;
+  }
+  #confirm-sheet.show{opacity:1;visibility:visible}
+  #confirm-sheet .cs-card{
+    width:100%;max-width:430px;background:var(--panel);
+    border:1px solid var(--line2);border-radius:var(--r-lg);
+    padding:18px;display:flex;flex-direction:column;gap:12px;
+    transform:translateY(10px);transition:.25s;
+  }
+  #confirm-sheet.show .cs-card{transform:none}
+  #confirm-sheet h3{margin:0;font-size:1.05rem}
+  #confirm-sheet .cs-body{margin:0;color:var(--muted);font-size:.88rem;line-height:1.55}
+  #confirm-sheet .cs-btns{display:flex;gap:8px;justify-content:flex-end}
+
   /* queue: join card + QR lock */
   .joincard{display:flex;flex-direction:column;gap:9px;position:relative;overflow:hidden}
   .joincard .row2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px} /* zero-min tracks: long typed values can't blow out the grid */
@@ -296,10 +314,9 @@
   .pm-line .elo{color:var(--felt);font-weight:800;font-size:.8rem}
   .pm-line.g b{color:var(--muted);font-weight:700}
   .qrow .side{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0}
-  .skip3{display:flex;gap:4px;background:none;border:none;padding:4px;cursor:pointer}
+  .skip3{display:inline-flex;gap:4px;padding:4px;cursor:default}
   .skip3 i{width:9px;height:9px;border-radius:50%;background:var(--line2);display:block}
   .skip3 i.f{background:var(--warn)}
-  .skip3:disabled{opacity:.35;cursor:default}
 
   /* stuck duo: partner declined/expired and the party has no P2 — it holds its
      queue spot but can't reach the table, so the card glows red */
@@ -886,7 +903,7 @@
         <span class="spacer"></span>
         <button id="hub-user" class="hub-user btn-ghost" type="button" hidden style="border-radius:999px"></button>
         <button id="hub-admin-chip" class="hub-adminchip" type="button" hidden>ADMIN</button>
-        <button id="hub-bell" class="btn ghost tiny hub-bell" type="button" hidden title="Notifications">🔔<span id="hub-bell-n" class="bell-n" hidden></span></button>
+        <button id="hub-bell" class="btn ghost tiny hub-bell" type="button" hidden title="Account &amp; notifications">👤<span id="hub-bell-n" class="bell-n" hidden></span></button>
         <button id="hub-admin-btn" class="btn ghost tiny" type="button" title="Admin unlock">🔒</button>
       </div>
       <div id="queue-hours" class="hours" hidden></div>
@@ -1023,7 +1040,8 @@
 
           <details class="card changelog">
             <summary>✨ What's new</summary>
-            <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+              <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+              <div class="cl-item"><span class="chip">PR41</span><span>Skip votes ask first — and your account shows who voted to skip you</span></div>
               <div class="cl-item"><span class="chip">PR34</span><span>Team up is now a request — duo owners accept or decline</span></div>
               <div class="cl-item"><span class="chip">PR22</span><span>Shot timer: per-rack extension button + New Rack</span></div>
               <div class="cl-item"><span class="chip">PR21</span><span>Only ranked matches move ratings; fairer rating baseline</span></div>
@@ -1041,6 +1059,12 @@
           <div id="me-pending">
             <div class="sec-h">Pending confirmations</div>
             <div id="me-mine" style="display:flex;flex-direction:column;gap:10px"></div>
+          </div>
+
+          <div id="me-skips" hidden>
+            <div class="sec-h">Recently skipped</div>
+            <div id="me-skiplist" style="display:flex;flex-direction:column;gap:10px"></div>
+            <p class="fine" style="margin:8px 0 0">Parties voted off the table in the last 7 days · shown with who voted</p>
           </div>
         </div>
 
@@ -1069,6 +1093,17 @@
           <span class="ic" aria-hidden="true">🐙</span>
           <span><b>GitHub issue</b><small>Bug reports &amp; feature requests — opens in a new tab</small></span>
         </button>
+      </div>
+    </div>
+
+    <div id="confirm-sheet" role="alertdialog" aria-modal="true" aria-labelledby="cs-title" aria-describedby="cs-body">
+      <div class="cs-card">
+        <h3 id="cs-title"></h3>
+        <p class="cs-body" id="cs-body"></p>
+        <div class="cs-btns">
+          <button id="cs-cancel" class="btn tiny" type="button">Cancel</button>
+          <button id="cs-ok" class="btn primary tiny" type="button"></button>
+        </div>
       </div>
     </div>
   </section>
@@ -1805,20 +1840,60 @@ const Hub = (() => {
     return line;
   }
 
-  /* skip-vote dots (●●○): filled = votes cast; whole dot row is the vote button */
-  function skipDots(votes, partyId, ariaName) {
-    const b = el('button', 'skip3');
-    b.type = 'button';
-    b.setAttribute('aria-label', 'Vote to skip ' + ariaName + ' — ' + votes + ' of 3 votes');
-    b.title = 'Vote to skip ' + ariaName + ' (' + votes + '/3)';
-    for (let i = 0; i < 3; i++) b.append(el('i', i < votes ? 'f' : null));
-    b.addEventListener('click', async () => {
-      try {
-        const r = await api('/queue/' + partyId + '/vote-skip', { method: 'POST' });
-        if (r.skipped) refreshAll();
-      } catch (ex) { alert(ex.message); }
+  /* centered confirm dialog — promise resolves true/false; backdrop, Esc and
+     Cancel all answer false */
+  let csResolve = null;
+  function ask({ title, body, confirmLabel = 'Confirm', danger = false }) {
+    return new Promise(resolve => {
+      csResolve = resolve;
+      $('#cs-title').textContent = title;
+      $('#cs-body').textContent = body;
+      const ok = $('#cs-ok');
+      ok.textContent = confirmLabel;
+      ok.className = 'btn tiny ' + (danger ? 'danger' : 'primary');
+      $('#confirm-sheet').classList.add('show');
+      ok.focus();
     });
-    return b;
+  }
+  function closeAsk(v) {
+    $('#confirm-sheet').classList.remove('show');
+    if (csResolve) { csResolve(v); csResolve = null; }
+  }
+  $('#cs-ok').addEventListener('click', () => closeAsk(true));
+  $('#cs-cancel').addEventListener('click', () => closeAsk(false));
+  $('#confirm-sheet').addEventListener('click', e => {
+    if (e.target === $('#confirm-sheet')) closeAsk(false);
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && $('#confirm-sheet').classList.contains('show')) closeAsk(false);
+  });
+
+  /* skip-vote dots (●●○): display only — voting goes through the Skip button
+     so nobody fires a logged vote by accident */
+  function skipDots(votes, ariaName) {
+    const d = el('span', 'skip3');
+    d.setAttribute('role', 'img');
+    d.setAttribute('aria-label', 'Skip votes for ' + ariaName + ' — ' + votes + ' of 3');
+    d.title = votes + '/3 votes to skip';
+    for (let i = 0; i < 3; i++) d.append(el('i', i < votes ? 'f' : null));
+    return d;
+  }
+
+  /* one skip vote, behind the "are you sure" dialog — the vote is logged and
+     the skipped players see who voted */
+  async function voteSkip(p) {
+    const name = p.p1 ? p.p1.name : 'this party';
+    const ok = await ask({
+      title: 'Vote to skip ' + name + '?',
+      body: 'Are you sure you want to vote for this party to be skipped? This action is logged and is visible to admins and the people you are trying to skip.',
+      confirmLabel: 'Vote to skip',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api('/queue/' + p.id + '/vote-skip', { method: 'POST' });
+      refreshAll(); // show the new dot count right away
+    } catch (ex) { alert(ex.message); }
   }
 
   /* team-up popup: the duo owner sees it on the queue tab until they respond
@@ -2038,10 +2113,8 @@ const Hub = (() => {
         }, null, 'btn tiny danger'));
         // table skip vote: three people can vote a stuck party off the table
         if (me && !me.guest && !mineIn(p)) {
-          btns.append(actBtn('Skip ' + p.votes + '/3', async () => {
-            const r = await api('/queue/' + p.id + '/vote-skip', { method: 'POST' });
-            if (r.skipped) refreshAll();
-          }, 'Vote to skip ' + (p.p1 ? p.p1.name : 'this party') + ' off the table', 'btn tiny'));
+          btns.append(actBtn('Skip ' + p.votes + '/3', () => voteSkip(p),
+            'Vote to skip ' + (p.p1 ? p.p1.name : 'this party') + ' off the table', 'btn tiny'));
         }
       });
       nowBox.append(head, vsrow, btns);
@@ -2088,8 +2161,12 @@ const Hub = (() => {
       side.append(el('span', 'chip', p.format.toUpperCase()));
       if (p.pending_invite) side.append(el('span', 'chip warn', 'PENDING REQUEST'));
       if (p.pickup_open) side.append(el('span', 'chip ok', 'PICKUP OPEN'));
-      if (me && !me.guest && p.p1) // skip votes need an account and a real party
-        side.append(skipDots(p.votes, p.id, p.p1.name));
+      if (me && !me.guest && p.p1) { // skip votes need an account and a real party
+        side.append(skipDots(p.votes, p.p1.name));
+        if (!mine) // backend rejects self-votes — don't offer the button
+          side.append(actBtn('Skip ' + p.votes + '/3', () => voteSkip(p),
+            'Vote to skip ' + p.p1.name + ' off the table', 'btn tiny'));
+      }
       if (mine) {
         if (p.format === 'duo' && !p.p2) {
           side.append(actBtn('Find partner', () => {
@@ -2418,6 +2495,29 @@ const Hub = (() => {
         mineBox.append(card);
       });
     } catch { mineBox.append(el('div', 'fine', 'Sign in to see confirmations.')); }
+    renderSkipHistory();
+  }
+
+  /* recent 3-vote skips against my parties, with the voters named */
+  async function renderSkipHistory() {
+    const wrap = $('#me-skips'), box = $('#me-skiplist');
+    if (!wrap) return;
+    if (!me || me.guest || tab !== 'me') { wrap.hidden = true; return; }
+    try {
+      const { skips } = await api('/me/skip-history');
+      box.innerHTML = '';
+      wrap.hidden = !skips.length;
+      skips.forEach(s => {
+        const card = el('div', 'pend');
+        const names = s.members.map(m => m.registered
+          ? m.name + (m.username ? ' @' + m.username : '') : m.name).join(' & ');
+        card.append(el('b', null, fmtWhen(s.skipped_at) + ' · your ' + s.format + ' party'));
+        card.append(el('div', 'fine', 'With: ' + names));
+        card.append(el('div', 'fine',
+          'Voted to skip you: ' + s.voters.map(v => v.nickname + (v.username ? ' @' + v.username : '')).join(', ')));
+        box.append(card);
+      });
+    } catch { wrap.hidden = true; }
   }
 
   /* ---------- admin: schedule + wipe ---------- */
