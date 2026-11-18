@@ -586,6 +586,12 @@
     background:var(--felt);border-radius:99px;padding:2px 7px;white-space:nowrap;
   }
   .stepper{display:grid;grid-template-columns:44px 1fr 44px;gap:8px;align-items:center}
+  .custom-head{font-size:.68rem;font-weight:800;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;margin-top:2px}
+  .custom-clock{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  .cfield{display:flex;flex-direction:column;gap:6px;min-width:0}
+  .cfield-label{font-size:.72rem;color:var(--muted);font-weight:700}
+  .cfield .stepper{grid-template-columns:36px minmax(0,1fr) 36px;gap:6px}
+  @media (max-width:520px){.custom-clock{grid-template-columns:1fr}}
   .stepper button{
     height:42px;border:1px solid var(--line2);border-radius:var(--r-sm);font-size:1.3rem;
     color:var(--muted);background:var(--panel);transition:.12s;
@@ -1252,9 +1258,18 @@ const SHOT_PRESETS = [
 ];
 const DEFAULT_SHOT_PRESET = 'wpa';
 const shotPreset = id => SHOT_PRESETS.find(p => p.id === id) || SHOT_PRESETS[0];
+/* which preset (if any) a team's custom values still match — otherwise 'custom' */
+const matchPreset = i => {
+  const pr = SHOT_PRESETS.find(q => q.shot === settings.shot[i] && q.ext === settings.ext[i] && settings.extCount[i] === 1);
+  return pr ? pr.id : 'custom';
+};
+const presetLabel = i => (settings.shotPreset[i] === 'custom' ? 'Custom' : shotPreset(settings.shotPreset[i]).label);
+/* "1 × 25s extension", "2 × 30s extensions", "no extensions" */
+const extText = i => (settings.extCount[i] <= 0 ? 'no extensions'
+  : `${settings.extCount[i]} × ${settings.ext[i]}s extension${settings.extCount[i] === 1 ? '' : 's'}`);
 const DEFAULT_SETTINGS = {
   names: ['Team 1', 'Team 2'], rosters: [['', ''], ['', '']],
-  shotPreset: [DEFAULT_SHOT_PRESET, DEFAULT_SHOT_PRESET], shot: [35, 35], ext: [25, 25], game: [6, 6],
+  shotPreset: [DEFAULT_SHOT_PRESET, DEFAULT_SHOT_PRESET], shot: [35, 35], ext: [25, 25], extCount: [1, 1], game: [6, 6],
 };
 const settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 
@@ -1263,7 +1278,7 @@ const app = { screen: 'home', mode: null };           // mode: 'shot' | 'game'
 const match = {
   active: 0, running: false, started: false, over: false, violPause: false,
   dur: [0, 0], remaining: [0, 0], seg: [0, 0], endAt: 0, winner: null, lastBeepSec: null,
-  extUsed: [false, false], // shot mode: one extension per team per rack
+  extLeft: [1, 1], // shot mode: extensions left this rack, per team
 };
 let rafId = 0;
 
@@ -2470,16 +2485,16 @@ const Hub = (() => {
 /* ==================== screen 2: config / handicaps ==================== */
 function modeUnits() {
   if (app.mode === 'shot') {
-    // rule presets only — each sets seconds per shot AND the extension length
+    // rule presets (WPA / Pro) plus custom shot clock, extension length and extensions per rack
     return {
       presetMode: true,
       get: i => settings.shotPreset[i],
       set: (i, id) => {
         const pr = shotPreset(id);
-        settings.shotPreset[i] = pr.id; settings.shot[i] = pr.shot; settings.ext[i] = pr.ext;
+        settings.shotPreset[i] = pr.id; settings.shot[i] = pr.shot; settings.ext[i] = pr.ext; settings.extCount[i] = 1;
       },
-      fmtBig: id => `${shotPreset(id).shot}s`,
-      unitFor: id => `per shot · +${shotPreset(id).ext}s extension`,
+      fmtBig: () => '',
+      unitFor: i => `per shot · ${settings.shotPreset[i] === 'custom' ? 'custom · ' : ''}${extText(i)}`,
     };
   }
   return {
@@ -2554,14 +2569,17 @@ function teamCard(i) {
 
   const chips = el('div', 'chips');
   const num = document.createElement('input');
+  const customSteppers = [];
   const refresh = syncInput => {
     const v = u.get(i);
-    bigNum.textContent = u.fmtBig(v);
     if (u.presetMode) {
-      bigUnit.textContent = u.unitFor(v);
+      bigNum.textContent = `${settings.shot[i]}s`;
+      bigUnit.textContent = u.unitFor(i);
       $$('.pchip', chips).forEach(c => c.classList.toggle('on', c.dataset.v === v));
+      customSteppers.forEach(st => st.sync());
       return;
     }
+    bigNum.textContent = u.fmtBig(v);
     if (syncInput !== false) num.value = v;
     $$('.pchip', chips).forEach(c => c.classList.toggle('on', Number(c.dataset.v) === v));
   };
@@ -2575,7 +2593,48 @@ function teamCard(i) {
       c.addEventListener('click', () => { u.set(i, pr.id); refresh(); });
       chips.appendChild(c);
     });
-    body.append(nameInput, roster, big, chips);
+    /* custom: any change here switches the team to "custom" unless it still matches a preset */
+    const custom = el('div', 'custom-clock');
+    const field = (label, key, min, max, stepBy) => {
+      const wrap = el('div', 'cfield');
+      const lab = el('div', 'cfield-label', label);
+      const st = el('div', 'stepper');
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.min = min; inp.max = max; inp.step = stepBy;
+      inp.setAttribute('aria-label', `Team ${i + 1} ${label}`);
+      const put = v => {
+        settings[key][i] = clamp(Math.round(v), min, max);
+        settings.shotPreset[i] = matchPreset(i);
+        refresh();
+      };
+      const minus = el('button', null, '−'); minus.type = 'button';
+      minus.setAttribute('aria-label', `Team ${i + 1} ${label} decrease`);
+      minus.addEventListener('click', () => put(settings[key][i] - stepBy));
+      const plus = el('button', null, '+'); plus.type = 'button';
+      plus.setAttribute('aria-label', `Team ${i + 1} ${label} increase`);
+      plus.addEventListener('click', () => put(settings[key][i] + stepBy));
+      inp.addEventListener('input', () => {
+        const v = Number(inp.value);
+        if (inp.value !== '' && Number.isFinite(v)) {
+          settings[key][i] = clamp(Math.round(v), min, max);
+          settings.shotPreset[i] = matchPreset(i);
+          bigNum.textContent = `${settings.shot[i]}s`;
+          bigUnit.textContent = u.unitFor(i);
+          $$('.pchip', chips).forEach(c => c.classList.toggle('on', c.dataset.v === settings.shotPreset[i]));
+        }
+      });
+      inp.addEventListener('change', () => put(Number(inp.value) || min));
+      st.append(minus, inp, plus);
+      wrap.append(lab, st);
+      customSteppers.push({ sync: () => { if (document.activeElement !== inp) inp.value = settings[key][i]; } });
+      return wrap;
+    };
+    custom.append(
+      field('Seconds per shot', 'shot', 1, 99, 5),
+      field('Extension (seconds)', 'ext', 5, 99, 5),
+      field('Extensions per rack', 'extCount', 0, 5, 1),
+    );
+    body.append(nameInput, roster, big, chips, el('div', 'custom-head', 'Custom'), custom);
     card.append(head, body);
     refresh();
     return card;
@@ -2665,7 +2724,7 @@ function renderRules() {
       step(3, 'All balls stopped?' +
         '<span class="sub">• Missed — <kbd>SPACE</kbd> passes the turn.</span>' +
         '<span class="sub">• Scored — <kbd>ENTER</kbd> resets the clock; same shooter continues.</span>'),
-      step(4, `Need more time? <kbd>E</kbd> adds ${settings.ext[0] === settings.ext[1] ? settings.ext[0] + 's' : settings.ext[0] + 's / ' + settings.ext[1] + 's'} — one extension per team per rack.` +
+      step(4, `Need more time? <kbd>E</kbd> uses an extension — ${extText(0) === extText(1) ? extText(0) + ' per team' : settings.names[0] + ': ' + extText(0) + ' · ' + settings.names[1] + ': ' + extText(1)}, per rack.` +
         '<span class="sub">• Rack over? <kbd>N</kbd> starts a new rack and restores both extensions.</span>'),
     );
   } else {
@@ -2678,7 +2737,7 @@ function renderRules() {
 
   const size = i => `${settings.rosters[i].length}p`;
   $('#rules-summary').textContent = shot
-    ? `${shotPreset(settings.shotPreset[0]).label} ${settings.shot[0]}s+${settings.ext[0]}s / ${shotPreset(settings.shotPreset[1]).label} ${settings.shot[1]}s+${settings.ext[1]}s · ${size(0)} / ${size(1)}`
+    ? `${presetLabel(0)} ${settings.shot[0]}s+${settings.extCount[0]}×${settings.ext[0]}s / ${presetLabel(1)} ${settings.shot[1]}s+${settings.extCount[1]}×${settings.ext[1]}s · ${size(0)} / ${size(1)}`
     : `${settings.game[0]}:00 / ${settings.game[1]}:00 · ${size(0)} / ${size(1)}`;
 }
 
@@ -2697,7 +2756,7 @@ function initMatch() {
   match.violPause = false;
   match.winner = null;
   match.lastBeepSec = null;
-  match.extUsed = [false, false];
+  match.extLeft = [settings.extCount[0], settings.extCount[1]];
   hideOverlay();
   hideBanner();
   pauseGlowClear();
@@ -2812,32 +2871,34 @@ function actionResetShot() {
   renderAll();
 }
 
-/* E — shot mode: the shooter's one extension this rack adds their preset's extension to the current shot.
+/* E — shot mode: uses one of the shooter's extensions this rack (count + length set per team).
    Works while running or paused (doesn't change pause state). ENTER/SPACE afterwards
    give a normal fresh clock, so the extra time only applies to this shot. */
 function actionExtension() {
   if (app.mode !== 'shot' || match.over || !match.started) return;
   const i = match.active;
-  if (match.extUsed[i]) {
-    showBanner(`${settings.names[i]} already used their extension this rack.`);
+  if (match.extLeft[i] <= 0) {
+    showBanner(settings.extCount[i] <= 0
+      ? `${settings.names[i]} has no extensions in this setup.`
+      : `${settings.names[i]} has no extensions left this rack.`);
     return;
   }
   snapshotActive();
-  match.extUsed[i] = true;
+  match.extLeft[i] -= 1;
   const extSec = settings.ext[i];
   match.remaining[i] += extSec * 1000;
   if (match.running) runActive(); // recompute endAt with the added time
   match.lastBeepSec = null;
   Sound.resetShot();
   flashPanel(i);
-  showBanner(`Extension — ${settings.names[i]} +${extSec}s`);
+  showBanner(`Extension — ${settings.names[i]} +${extSec}s` + (settings.extCount[i] > 1 ? ` (${match.extLeft[i]} left this rack)` : ''));
   renderAll();
 }
 
 /* N — shot mode: new rack restores both teams' extensions (clock itself is untouched) */
 function actionNewRack() {
   if (app.mode !== 'shot' || match.over || !match.started) return;
-  match.extUsed = [false, false];
+  match.extLeft = [settings.extCount[0], settings.extCount[1]];
   Sound.switchTurn();
   showBanner('New rack — extensions restored for both teams.');
   renderAll();
@@ -3000,16 +3061,17 @@ function renderAll() {
     r.textContent = players.join(' · ');
     r.title = players.join(', ');
     const ext = $('.ext', p);
-    ext.hidden = app.mode !== 'shot';
-    ext.classList.toggle('used', match.extUsed[i]);
-    ext.textContent = match.extUsed[i] ? 'EXT USED' : 'EXT READY';
+    const cnt = settings.extCount[i], left = match.extLeft[i];
+    ext.hidden = app.mode !== 'shot' || cnt <= 0;
+    ext.classList.toggle('used', left <= 0);
+    ext.textContent = cnt === 1 ? (left > 0 ? 'EXT READY' : 'EXT USED') : `EXT ${left}/${cnt}`;
   });
 
   // extension + new-rack controls (shot mode only)
   const shot = app.mode === 'shot';
   $$('.shot-only').forEach(b => { b.hidden = !shot; });
   $('.bl', $('#btn-ext')).textContent = `+${settings.ext[match.active]}s EXTENSION`;
-  $('#btn-ext').disabled = !match.started || match.over || match.extUsed[match.active];
+  $('#btn-ext').disabled = !match.started || match.over || match.extLeft[match.active] <= 0;
   $('#btn-new-rack').disabled = !match.started || match.over;
   $('#timer-mode-badge').textContent = app.mode === 'shot' ? 'SHOT TIMER' : 'GAME TIMER';
   $('#timer-hints').innerHTML = app.mode === 'shot'
