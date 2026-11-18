@@ -319,21 +319,11 @@ async function performClaim(env, user, party) {
    picks a registered teammate, who gets a popup to accept/decline. Guests can
    own invites too (guest-led duos) — requester is then null and the guest
    proves ownership by nickname, same as leave. */
-async function createTeamUpInvite(env, party, requester /* user row or null */, targetId, { requireBelow = false } = {}) {
+async function createTeamUpInvite(env, party, requester /* user row or null */, targetId) {
   const target = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(Number(targetId)).first();
   if (!target) throw new HttpError(400, 'player not found');
   if (target.id === party.p1_user_id || target.id === party.p2_user_id) {
     throw new HttpError(400, 'that player is already on this party');
-  }
-  if (requireBelow) {
-    // "pick someone up from the queue": the target must be waiting BEHIND us,
-    // so the claim pulls them up instead of cutting in front of our own party
-    const below = await env.DB.prepare(
-      `SELECT id FROM queue_parties
-       WHERE status = 'waiting' AND id != ? AND position > ?
-         AND (p1_user_id = ? OR p2_user_id = ?)`
-    ).bind(party.id, party.position, target.id, target.id).first();
-    if (!below) throw new HttpError(400, 'that player is not queued below you');
   }
   if (requester) {
     const live = await env.DB.prepare(
@@ -1010,8 +1000,9 @@ async function handleApi(request, env, url) {
     if (!body?.user_id) return bad('pick a player to invite');
     await expireTeamUps(env.DB);
     try {
-      // "someone already on the queue below us" — the search-form option
-      const invite = await createTeamUpInvite(env, party, user, body.user_id, { requireBelow: true });
+      // the search-form option: any registered player, queued or not — they
+      // get the same invite popup and join on accept (switching if queued)
+      const invite = await createTeamUpInvite(env, party, user, body.user_id);
       await audit(env.DB, 'duo_invite', user ? user.id : null,
         'party=' + party.id + ' target=' + body.user_id + ' search');
       return json({ ok: true, invite }, 201);
