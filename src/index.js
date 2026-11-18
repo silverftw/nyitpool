@@ -1408,17 +1408,10 @@ async function handleApi(request, env, url) {
     const since = Number(url.searchParams.get('since')) || 0;
     const until = Number(url.searchParams.get('until')) || 0;
     const limit = clamp(Number(url.searchParams.get('limit')) || 20, 1, 100);
-    let sql = `SELECT m.id, m.match_type, m.format, m.winner_team, m.rating_delta, m.played_at,
-              (SELECT group_concat(
-                 CASE WHEN mp.user_id IS NOT NULL
-                      THEN (SELECT nickname FROM users u WHERE u.id = mp.user_id)
-                      ELSE 'Guest: ' || mp.guest_name END, ' | ')
-               FROM match_players mp WHERE mp.match_id = m.id AND mp.team = 1) AS team1,
-              (SELECT group_concat(
-                 CASE WHEN mp.user_id IS NOT NULL
-                      THEN (SELECT nickname FROM users u WHERE u.id = mp.user_id)
-                      ELSE 'Guest: ' || mp.guest_name END, ' | ')
-               FROM match_players mp WHERE mp.match_id = m.id AND mp.team = 2) AS team2
+    // rosters come from ONE indexed IN() pass below (team1/team2 strings are
+    // rebuilt in JS from it) — the old per-match group_concat subqueries
+    // full-scanned match_players without an index: ~10k rows read per call
+    let sql = `SELECT m.id, m.match_type, m.format, m.winner_team, m.rating_delta, m.played_at
        FROM matches m WHERE m.played_at >= ?`;
     const params = [since];
     if (until) { sql += ' AND m.played_at <= ?'; params.push(until); }
@@ -1453,7 +1446,12 @@ async function handleApi(request, env, url) {
           rating_after: r.rating_after,
         });
       }
-      for (const m of results) m.players = byMatch.get(m.id) || [];
+      for (const m of results) {
+        m.players = byMatch.get(m.id) || [];
+        // legacy roster strings (same shape the group_concat subqueries made)
+        m.team1 = m.players.filter(p => p.team === 1).map(p => p.name).join(' | ');
+        m.team2 = m.players.filter(p => p.team === 2).map(p => p.name).join(' | ');
+      }
     }
     return json({ matches: results });
   }
