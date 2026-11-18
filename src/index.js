@@ -1186,6 +1186,7 @@ async function handleApi(request, env, url) {
         .bind(max.m + 1, party.id),
       env.DB.prepare('DELETE FROM skip_votes WHERE party_id = ?').bind(party.id),
     ]);
+    await promoteNext(env.DB); // demoting freed a table seat — refill it like every other seat-freeing path
     await audit(env.DB, 'admin_party_demote', null, 'party=' + party.id + ' to back of line');
     return json({ ok: true, id: party.id });
   }
