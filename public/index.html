@@ -309,25 +309,63 @@
   .skip3 i.f{background:var(--warn)}
   .skip3:disabled{opacity:.35;cursor:default}
 
+  /* stuck duo: partner declined/expired and the party has no P2 — it holds its
+     queue spot but can't reach the table, so the card glows red */
+  .qrow.stuck{
+    border-color:color-mix(in srgb,var(--danger) 55%,var(--line));
+    box-shadow:0 0 0 1px color-mix(in srgb,var(--danger) 30%,transparent),
+               0 0 16px -6px var(--danger);
+    animation:stuckpulse 1.6s ease-in-out infinite;
+  }
+  @keyframes stuckpulse{
+    50%{box-shadow:0 0 0 1px color-mix(in srgb,var(--danger) 55%,transparent),
+                    0 0 26px -4px var(--danger)}
+  }
+  @media (prefers-reduced-motion: reduce){.qrow.stuck{animation:none}}
+  .qrow .warnline{color:var(--danger);font-size:.76rem;font-weight:700;line-height:1.4}
+  .qrow .pendline{color:var(--muted);font-size:.76rem;font-weight:600}
+
   /* team-up request popup: floats over the queue pane until the owner responds
      (lives inside the pane, so other tabs hide it for free); right edge clears
-     the feedback fab */
-  #teamup-pop{
+     the feedback fab. #invite-pop is the same card one level up for the
+     "X invited you to their duo" popup, so the two never overlap. */
+  #teamup-pop, #invite-pop{
     position:fixed;left:12px;right:74px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:44;
     max-width:656px;margin:0 auto;display:none;align-items:center;gap:11px;
     background:linear-gradient(180deg,color-mix(in srgb,var(--felt) 16%,transparent),transparent 74%),var(--panel);
     border:1px solid color-mix(in srgb,var(--felt) 50%,var(--line));
     border-radius:var(--r-lg);padding:12px 13px;box-shadow:var(--shadow);
   }
-  #teamup-pop.show{display:flex}
-  #teamup-pop .tav{
+  #invite-pop{bottom:calc(146px + env(safe-area-inset-bottom))}
+  #teamup-pop.show, #invite-pop.show{display:flex}
+  #teamup-pop .tav, #invite-pop .tav{
     flex-shrink:0;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;
     font-weight:900;background:var(--felt);color:var(--feltink);
   }
-  #teamup-pop .twho{flex:1;min-width:0}
-  #teamup-pop .twho b{display:block;font-size:.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #teamup-pop .twho small{display:block;color:var(--muted);font-size:.74rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #teamup-pop .tbtns{display:flex;flex-direction:column;gap:6px;flex-shrink:0}
+  #teamup-pop .twho, #invite-pop .twho{flex:1;min-width:0}
+  #teamup-pop .twho b, #invite-pop .twho b{display:block;font-size:.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #teamup-pop .twho small, #invite-pop .twho small{display:block;color:var(--muted);font-size:.74rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #teamup-pop .tbtns, #invite-pop .tbtns{display:flex;flex-direction:column;gap:6px;flex-shrink:0}
+
+  /* find-a-partner sheet for the owner of an incomplete waiting duo: four ways
+     to fill the P2 slot (pickup broadcast / search request / guest / leave) */
+  #partner-pop{
+    position:fixed;left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:45;
+    max-width:656px;margin:0 auto;display:none;
+    background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--r-lg);padding:13px;box-shadow:var(--shadow);
+  }
+  #partner-pop.show{display:block}
+  #partner-pop .phead{display:flex;align-items:center;gap:8px}
+  #partner-pop .phead h4{margin:0;font-size:.98rem;flex:1}
+  #partner-pop .pbtns{display:flex;flex-direction:column;gap:7px;margin-top:10px}
+  #partner-pop .pbtns .btn{text-align:left;justify-content:flex-start}
+  #partner-pop .subform{display:flex;gap:7px;margin-top:8px;align-items:center}
+  #partner-pop .subform .pick-slot{flex:1}
+  #partner-pop .subform input{
+    width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:var(--r-md);
+    color:var(--text);padding:9px 11px;font-size:.9rem;font-weight:600;
+  }
 
   /* log: team boxes + history rows */
   .teambox{border:1px solid var(--line);border-radius:var(--r-lg);padding:12px;background:var(--panel2)}
@@ -893,7 +931,9 @@
           <div id="hub-playing" hidden></div>
           <div id="hub-list"></div>
           <div id="teamup-pop" role="alertdialog" aria-label="Team-up request"></div>
-          <p class="fine" style="text-align:center;margin:2px 0 0">3 votes skips a party · Team up sends a join request to an open duo's owner</p>
+          <div id="invite-pop" role="alertdialog" aria-label="Duo invite"></div>
+          <div id="partner-pop" role="dialog" aria-label="Find a partner"></div>
+          <p class="fine" style="text-align:center;margin:2px 0 0">3 votes skips a party · a registered teammate gets a request to accept · guests join instantly</p>
         </div>
 
         <!-- LOG PANE -->
@@ -1636,6 +1676,11 @@ const Hub = (() => {
   let teamupOut = null;     // MY pending request -> "request sent…" on the row
   let teamupSentAt = 0;     // client-side 5s resend cool-down
   let teamupPopId = null;   // popup DOM rebuilt only when the request id changes
+  let inviteIn = null;      // an invite waiting on ME (I'm the requested teammate) -> popup
+  let invitePopId = null;   // same rebuild-once trick as teamupPopId
+  let partnerFor = null;    // party id whose find-a-partner sheet is open
+  let partnerPopSig = null; // sheet DOM rebuilt only when party/pickup state changes
+  let partnerSub = null;    // open sub-form inside the sheet: 'req' | 'guest'
   let qKey = { required: false, valid: true };
   let qMode = { mode: 'open', override: null, schedule: { open: '09:00', duo_start: '12:00', duo_end: '18:00', close: '21:00' } };
   const fmt12 = hhmm => {
@@ -1653,6 +1698,7 @@ const Hub = (() => {
       if (r.key_ttl_ms) keyTtlMs = r.key_ttl_ms; // server owns the TTL
       teamupIn = r.teamup_in || null;
       teamupOut = r.teamup_out || null;
+      inviteIn = r.invite_in || null;
     } catch { parties = null; }
     renderQueue();
   }
@@ -1780,9 +1826,134 @@ const Hub = (() => {
     pop.classList.add('show');
   }
 
+  /* invite popup: "X invited you to their duo" — accepting joins their party
+     (a team switch if I'm queued elsewhere), declining parks their duo in
+     stuck mode. Same rebuild-once trick as the team-up popup. */
+  function renderInvitePop() {
+    const pop = $('#invite-pop');
+    const live = inviteIn;
+    if (!live) { pop.classList.remove('show'); invitePopId = null; return; }
+    if (live.id !== invitePopId) {
+      invitePopId = live.id;
+      pop.innerHTML = '';
+      pop.append(el('span', 'tav', (live.inviter || '?').trim().charAt(0).toUpperCase()));
+      const who = el('div', 'twho');
+      who.append(el('b', null, live.inviter));
+      who.append(el('small', null, 'invited you to team up'));
+      who.append(el('small', 'texp', ''), el('small', null, 'accepting switches you to their duo'));
+      pop.append(who);
+      const btns = el('div', 'tbtns');
+      btns.append(actBtn('Accept', async () => {
+        await api('/teamup/' + live.id + '/respond', { method: 'POST', body: { action: 'accept' } });
+        refreshAll();
+      }, 'Accept duo invite', 'btn primary tiny'));
+      btns.append(actBtn('Decline', async () => {
+        await api('/teamup/' + live.id + '/respond', { method: 'POST', body: { action: 'decline' } });
+        refreshAll();
+      }, 'Decline duo invite', 'btn tiny'));
+      pop.append(btns);
+    }
+    const left = Math.max(0, live.expires_at - Date.now());
+    const mm = Math.floor(left / 60000), ss = Math.floor((left % 60000) / 1000);
+    $('.texp', pop).textContent = left > 0
+      ? `expires in ${mm}:${String(ss).padStart(2, '0')}`
+      : 'expiring…';
+    pop.classList.add('show');
+  }
+
+  /* find-a-partner sheet for the owner of an incomplete waiting duo: fill P2
+     via a pickup broadcast, a searched queued player, a guest, or leave. The
+     DOM is rebuilt only when the party (or its pickup state) changes so typed
+     input survives polls; the open sub-form is re-applied after a rebuild. */
+  function closePartnerPop() {
+    partnerFor = partnerPopSig = partnerSub = null;
+    $('#partner-pop').classList.remove('show');
+  }
+  const ownerProof = () => (me && me.guest ? { guest_name: me.nickname } : {});
+
+  function applyPartnerSub() {
+    const req = $('#pp-req'), g = $('#pp-guest');
+    if (req) req.hidden = partnerSub !== 'req';
+    if (g) g.hidden = partnerSub !== 'guest';
+  }
+
+  function renderPartnerPop() {
+    const pop = $('#partner-pop');
+    const p = partnerFor == null ? null
+      : (parties || []).find(x => x.id === partnerFor && x.status === 'waiting' && x.format === 'duo' && !x.p2);
+    if (!p) { if (partnerFor != null) closePartnerPop(); return; }
+    const sig = p.id + ':' + (p.pickup_open ? 1 : 0);
+    if (sig !== partnerPopSig) {
+      partnerPopSig = sig;
+      pop.innerHTML = '';
+      const head = el('div', 'phead');
+      head.append(el('h4', null, 'Find a partner'));
+      head.append(actBtn('✕', () => closePartnerPop(), 'Close find-a-partner', 'btn tiny'));
+      pop.append(head);
+      pop.append(el('p', 'fine',
+        'Your duo holds its queue spot — it reaches the table once Player 2 is filled.'));
+      const btns = el('div', 'pbtns');
+      btns.append(actBtn(
+        p.pickup_open ? 'Stop pickup (open to the queue)' : 'Pick up anyone from the queue',
+        async () => {
+          await api('/queue/' + p.id + '/pickup',
+            { method: 'POST', body: { open: !p.pickup_open, ...ownerProof() } });
+          refreshAll();
+        }, 'Toggle pickup broadcast', p.pickup_open ? 'btn' : 'btn primary'));
+      btns.append(actBtn('Send a request by search', () => {
+        partnerSub = partnerSub === 'req' ? null : 'req'; applyPartnerSub();
+      }, null, 'btn'));
+      btns.append(actBtn('Add a guest', () => {
+        partnerSub = partnerSub === 'guest' ? null : 'guest'; applyPartnerSub();
+      }, null, 'btn'));
+      btns.append(actBtn('Leave the queue', async () => {
+        if (!confirm('Leave the queue? Your party empties and everyone moves up.')) return;
+        await api('/queue/' + p.id, {
+          method: 'DELETE',
+          body: me && me.guest ? { guest_name: me.nickname } : undefined,
+        });
+        closePartnerPop(); refreshAll();
+      }, null, 'btn tiny danger'));
+      pop.append(btns);
+      const reqForm = el('div', 'subform');
+      reqForm.id = 'pp-req'; reqForm.hidden = true;
+      const reqSlot = el('div', 'pick-slot');
+      const reqInput = document.createElement('input');
+      reqInput.placeholder = 'Queued player (@username)';
+      reqInput.maxLength = 20;
+      reqSlot.append(reqInput);
+      reqForm.append(reqSlot, actBtn('Send', async () => {
+        if (!reqInput.dataset.uid) return alert('Pick a player from the suggestions first.');
+        await api('/queue/' + p.id + '/invite',
+          { method: 'POST', body: { user_id: Number(reqInput.dataset.uid), ...ownerProof() } });
+        reqInput.value = ''; delete reqInput.dataset.uid;
+        partnerSub = null; applyPartnerSub(); refreshAll();
+      }, null, 'btn tiny'));
+      mkPicker(reqInput);
+      pop.append(reqForm);
+      const gForm = el('div', 'subform');
+      gForm.id = 'pp-guest'; gForm.hidden = true;
+      const gInput = document.createElement('input');
+      gInput.placeholder = 'Guest name';
+      gInput.maxLength = 24;
+      gForm.append(gInput, actBtn('Add', async () => {
+        const g = gInput.value.trim();
+        if (!g) return alert('Type a guest name first.');
+        await api('/queue/' + p.id + '/teammate',
+          { method: 'PATCH', body: { p2_guest_name: g, ...ownerProof() } });
+        closePartnerPop(); refreshAll();
+      }, null, 'btn tiny'));
+      pop.append(gForm);
+      applyPartnerSub();
+    }
+    pop.classList.add('show');
+  }
+
   function renderQueue() {
     renderHours();
     renderTeamupPop();
+    renderInvitePop();
+    renderPartnerPop();
     const playing = parties ? parties.filter(p => p.status === 'playing') : [];
     const waiting = parties ? parties.filter(p => p.status === 'waiting') : [];
     const nowBox = $('#hub-playing');
@@ -1857,20 +2028,35 @@ const Hub = (() => {
 
     waiting.forEach((p, k) => {
       const mine = mineIn(p);
-      const row = el('div', 'qrow');
+      const row = el('div', 'qrow' + (p.stuck ? ' stuck' : ''));
       row.append(el('span', 'pos', String(k + 2)));
       const who = el('div', 'who');
       const duo = el('div', 'duo');
       if (p.p1) duo.append(pmLine(p.p1));
       else duo.append(el('span', 'fine', '(empty slot)'));
       if (p.p2) duo.append(pmLine(p.p2));
+      else if (p.format === 'duo') duo.append(el('span', 'fine', '(waiting for a partner)'));
       who.append(duo);
+      if (p.stuck) {
+        who.append(el('span', 'warnline',
+          '⚠️ No partner — find one (player or guest) to get on the table. Your spot is held.'));
+      } else if (p.pending_invite) {
+        who.append(el('span', 'pendline',
+          'request sent to @' + p.pending_invite.username + ' — on the table once they accept'));
+      }
       row.append(who);
       const side = el('div', 'side');
       side.append(el('span', 'chip', p.format.toUpperCase()));
+      if (p.pending_invite) side.append(el('span', 'chip warn', 'PENDING REQUEST'));
+      if (p.pickup_open) side.append(el('span', 'chip ok', 'PICKUP OPEN'));
       if (me && !me.guest && p.p1) // skip votes need an account and a real party
         side.append(skipDots(p.votes, p.id, p.p1.name));
       if (mine) {
+        if (p.format === 'duo' && !p.p2) {
+          side.append(actBtn('Find partner', () => {
+            partnerFor = p.id; renderPartnerPop();
+          }, 'Open the find-a-partner options', 'btn tiny'));
+        }
         side.append(actBtn('Leave', async () => {
           await api('/queue/' + p.id, {
             method: 'DELETE',
@@ -1879,7 +2065,14 @@ const Hub = (() => {
           refreshAll();
         }, null, 'btn tiny danger'));
       } else if (!p.p2 && p.format === 'duo' && me && !me.guest) {
-        if (teamupOut && teamupOut.party_id === p.id) {
+        if (p.pickup_open) {
+          // broadcast pickup — anyone (queued or not) claims it instantly and
+          // jumps to this party; queued claimers detach from their old one
+          side.append(actBtn('Team up', async () => {
+            await api('/queue/' + p.id + '/teammate', { method: 'PATCH', body: {} });
+            refreshAll();
+          }, 'Claim this duo spot instantly', 'btn tiny'));
+        } else if (teamupOut && teamupOut.party_id === p.id) {
           side.append(el('span', 'chip ok', 'REQUEST SENT…')); // waiting on the owner
         } else if (p.p1 && p.p1.registered) {
           // owned duo: a request the owner approves, not an instant claim
