@@ -183,14 +183,12 @@ async function effectiveMode(db, env) {
 async function promoteNext(db) {
   // the table hosts TWO parties at once (winner stays, challenger from the queue);
   // promote the earliest waiting party with actual players while fewer than two
-  // are playing — blank admin stub parties are skipped, and duos only count once
-  // their P2 slot is filled (pending-invite / stuck duos keep their position but
-  // are passed over until they find a partner)
+  // are playing — blank admin stub parties are skipped; half-empty duos go up
+  // like anyone else and can pick up their P2 at the table
   const PROMOTE = `UPDATE queue_parties SET status = 'playing'
     WHERE id = (SELECT id FROM queue_parties WHERE status = 'waiting'
                 AND (p1_user_id IS NOT NULL OR p1_guest_name IS NOT NULL
                      OR p2_user_id IS NOT NULL OR p2_guest_name IS NOT NULL)
-                AND (format = 'solo' OR p2_user_id IS NOT NULL OR p2_guest_name IS NOT NULL)
                 ORDER BY position LIMIT 1)
       AND (SELECT COUNT(*) FROM queue_parties WHERE status = 'playing') < 2`;
   await db.batch([db.prepare(PROMOTE), db.prepare(PROMOTE)]);
