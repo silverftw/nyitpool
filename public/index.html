@@ -1386,8 +1386,8 @@ function showScreen(name) {
     hideBanner();
     pauseGlowClear();
   }
-  if (name === 'queue') Hub.start();
-  else if (from === 'queue') Hub.stop();
+  if (name === 'queue' || name === 'adminpage') Hub.start(); // adminpage rides the same 5s poll — its cards stay live
+  else if (from === 'queue' || from === 'adminpage') Hub.stop();
   if (name === 'adminpage') Hub.adminPage();
   app.screen = name;
   $$('.screen').forEach(s => s.classList.toggle('active', s.id === 'screen-' + name));
@@ -2581,6 +2581,8 @@ const Hub = (() => {
       t.append(thead, tbody);
     }
 
+    let liveSig = ''; // id:status:position of live parties, as last rendered
+
     async function refresh() {
       if (!adminPin) return;
       // mode switcher + schedule prefill from live config
@@ -2592,88 +2594,7 @@ const Hub = (() => {
       $$('#admin-modes button').forEach(b => {
         b.classList.toggle('on', b.dataset.m === (qMode.override || 'auto'));
       });
-
-      // live queue parties — roster editors + manual table control
-      const ap = $('#adm-parties');
-      ap.innerHTML = '';
-      const live = (parties || []).filter(p => p.status === 'playing' || p.status === 'waiting');
-      if (!live.length) ap.append(el('div', 'fine', 'Queue is empty.'));
-      const slotBody = row => {
-        const inp = $('input', row);
-        const v = inp.value.trim();
-        if (inp.dataset.uid) return { user_id: Number(inp.dataset.uid) };
-        return v ? { guest_name: v } : null;
-      };
-      const mkSlotRow = (label, player) => {
-        const row = el('div', 'aslot');
-        row.append(el('span', 'lb', label));
-        const inp = document.createElement('input');
-        inp.maxLength = 24;
-        inp.placeholder = 'search player / guest name';
-        inp.value = player ? (player.registered ? player.name : player.name.replace(/^Guest: /, '')) : '';
-        if (player && player.registered) inp.dataset.uid = player.id;
-        row.append(inp); // attach first — mkPicker needs input.parentElement
-        mkPicker(inp);
-        const rm = el('button', 'rm-btn', '×');
-        rm.type = 'button';
-        rm.title = 'Clear this slot';
-        rm.addEventListener('click', () => { inp.value = ''; delete inp.dataset.uid; });
-        row.append(rm);
-        return row;
-      };
-      live.forEach(p => {
-        const card = el('div', 'aparty' + (p.status === 'playing' ? ' playing' : ''));
-        const top = el('div', 'hd');
-        top.append(el('span', p.status === 'playing' ? 'chip ok' : 'chip',
-          p.status === 'playing' ? 'ON THE TABLE' : '#' + p.position + ' IN LINE'));
-        top.append(el('span', 'chip', p.format.toUpperCase()));
-        card.append(top);
-
-        const r1 = mkSlotRow('P1', p.p1);
-        card.append(r1);
-        let r2 = null;
-        const rosterBody = () => ({ p1: slotBody(r1), p2: r2 ? slotBody(r2) : null });
-        const btns = el('div', 'btns');
-        if (p.format === 'duo') {
-          r2 = mkSlotRow('P2', p.p2);
-          card.append(r2);
-        } else {
-          const add = el('button', 'add-btn', '+ Add player');
-          add.type = 'button';
-          add.addEventListener('click', () => {
-            r2 = mkSlotRow('P2', null);
-            card.insertBefore(r2, btns);
-            add.remove();
-          });
-          card.append(add);
-        }
-
-        const save = async fn => { await fn(); await refresh(); refreshAll(); };
-        btns.append(actBtn('💾 Save roster', async () => {
-          await save(() => api('/admin/parties/' + p.id, { method: 'PUT', body: rosterBody() }));
-        }, 'Save roster', 'btn tiny'));
-        if (p.status === 'playing') {
-          btns.append(actBtn('⏬ Back to line', async () => {
-            await save(() => api('/admin/parties/' + p.id + '/demote', { method: 'POST' }));
-          }, 'Back to line', 'btn tiny'));
-        } else {
-          btns.append(actBtn('⬆', async () => {
-            await save(() => api('/admin/parties/reorder', { method: 'POST', body: { id: p.id, direction: 'up' } }));
-          }, 'Move up', 'btn tiny'));
-          btns.append(actBtn('⬇', async () => {
-            await save(() => api('/admin/parties/reorder', { method: 'POST', body: { id: p.id, direction: 'down' } }));
-          }, 'Move down', 'btn tiny'));
-          btns.append(actBtn('▶ Put on table', async () => {
-            await save(() => api('/admin/parties/' + p.id + '/promote', { method: 'POST' }));
-          }, 'Put on table', 'btn tiny primary'));
-        }
-        btns.append(actBtn('✕ Remove', async () => {
-          if (!confirm('Remove party #' + p.id + ' from the queue?')) return;
-          await save(() => api('/queue/' + p.id, { method: 'DELETE' }));
-        }, 'Remove party', 'btn tiny danger'));
-        card.append(btns);
-        ap.append(card);
-      });
+      renderParties();
 
       // pending & disputed (disputed flagged first, both get approve/reject)
       const pend = $('#adm-pending');
@@ -2738,6 +2659,115 @@ const Hub = (() => {
         }
       } catch (ex) { $('#adm-qr').innerHTML = ''; $('#adm-qr').append(el('div', 'fine center', String(ex.message))); }
 
+      await refreshTail();
+    }
+
+    /* live queue parties — roster editors + manual table control */
+    function renderParties() {
+      const ap = $('#adm-parties');
+      ap.innerHTML = '';
+      const live = (parties || []).filter(p => p.status === 'playing' || p.status === 'waiting');
+      if (!live.length) ap.append(el('div', 'fine', 'Queue is empty.'));
+      const slotBody = row => {
+        const inp = $('input', row);
+        const v = inp.value.trim();
+        if (inp.dataset.uid) return { user_id: Number(inp.dataset.uid) };
+        return v ? { guest_name: v } : null;
+      };
+      const mkSlotRow = (label, player) => {
+        const row = el('div', 'aslot');
+        row.append(el('span', 'lb', label));
+        const inp = document.createElement('input');
+        inp.maxLength = 24;
+        inp.placeholder = 'search player / guest name';
+        inp.value = player ? (player.registered ? player.name : player.name.replace(/^Guest: /, '')) : '';
+        if (player && player.registered) inp.dataset.uid = player.id;
+        inp.dataset.orig = inp.value; // syncLive's dirty check: has this slot been edited?
+        inp.dataset.origUid = inp.dataset.uid || '';
+        row.append(inp); // attach first — mkPicker needs input.parentElement
+        mkPicker(inp);
+        const rm = el('button', 'rm-btn', '×');
+        rm.type = 'button';
+        rm.title = 'Clear this slot';
+        rm.addEventListener('click', () => {
+          inp.value = ''; delete inp.dataset.uid;
+          inp.dataset.orig = ''; inp.dataset.origUid = '';
+        });
+        row.append(rm);
+        return row;
+      };
+      live.forEach(p => {
+        const card = el('div', 'aparty' + (p.status === 'playing' ? ' playing' : ''));
+        const top = el('div', 'hd');
+        top.append(el('span', p.status === 'playing' ? 'chip ok' : 'chip',
+          p.status === 'playing' ? 'ON THE TABLE' : '#' + p.position + ' IN LINE'));
+        top.append(el('span', 'chip', p.format.toUpperCase()));
+        card.append(top);
+
+        const r1 = mkSlotRow('P1', p.p1);
+        card.append(r1);
+        let r2 = null;
+        const rosterBody = () => ({ p1: slotBody(r1), p2: r2 ? slotBody(r2) : null });
+        const btns = el('div', 'btns');
+        if (p.format === 'duo') {
+          r2 = mkSlotRow('P2', p.p2);
+          card.append(r2);
+        } else {
+          const add = el('button', 'add-btn', '+ Add player');
+          add.type = 'button';
+          add.addEventListener('click', () => {
+            r2 = mkSlotRow('P2', null);
+            card.insertBefore(r2, btns);
+            add.remove();
+          });
+          card.append(add);
+        }
+
+        const save = async fn => { await fn(); await refresh(); refreshAll(); };
+        btns.append(actBtn('💾 Save roster', async () => {
+          await save(() => api('/admin/parties/' + p.id, { method: 'PUT', body: rosterBody() }));
+        }, 'Save roster', 'btn tiny'));
+        if (p.status === 'playing') {
+          btns.append(actBtn('⏬ Back to line', async () => {
+            await save(() => api('/admin/parties/' + p.id + '/demote', { method: 'POST' }));
+          }, 'Back to line', 'btn tiny'));
+        } else {
+          btns.append(actBtn('⬆', async () => {
+            await save(() => api('/admin/parties/reorder', { method: 'POST', body: { id: p.id, direction: 'up' } }));
+          }, 'Move up', 'btn tiny'));
+          btns.append(actBtn('⬇', async () => {
+            await save(() => api('/admin/parties/reorder', { method: 'POST', body: { id: p.id, direction: 'down' } }));
+          }, 'Move down', 'btn tiny'));
+          btns.append(actBtn('▶ Put on table', async () => {
+            await save(() => api('/admin/parties/' + p.id + '/promote', { method: 'POST' }));
+          }, 'Put on table', 'btn tiny primary'));
+        }
+        btns.append(actBtn('✕ Remove', async () => {
+          if (!confirm('Remove party #' + p.id + ' from the queue?')) return;
+          await save(() => api('/queue/' + p.id, { method: 'DELETE' }));
+        }, 'Remove party', 'btn tiny danger'));
+        card.append(btns);
+        ap.append(card);
+      });
+      liveSig = live.map(p => p.id + ':' + p.status + ':' + p.position).join('|');
+    }
+
+    /* the 5s poll calls this while the admin page is open: party cards must
+       track the live queue, or Back to line / Put on table fire on stale
+       parties and the API answers 'party not found'. Never yank inputs out
+       from under a typing admin — focus or unsaved roster edits block a sync. */
+    function syncLive() {
+      const live = (parties || []).filter(p => p.status === 'playing' || p.status === 'waiting');
+      if (live.map(p => p.id + ':' + p.status + ':' + p.position).join('|') === liveSig) return;
+      const ae = document.activeElement;
+      if (ae && ae.tagName === 'INPUT' && $('#screen-adminpage').contains(ae)) return;
+      const dirty = $$('#adm-parties input').some(i =>
+        i.value !== (i.dataset.orig || '') || (i.dataset.uid || '') !== (i.dataset.origUid || ''));
+      if (dirty) return;
+      renderParties();
+    }
+
+    async function refreshTail() {
       try {
         const players = (await api('/admin/players')).players;
         fillTable('#adm-players',
@@ -2770,13 +2800,14 @@ const Hub = (() => {
       } catch { /* pin */ }
     }
 
-    return { refresh };
+    return { refresh, syncLive };
   })();
 
   /* ---------- lifecycle ---------- */
   async function refreshAll() {
     if (!me) return;
     await refreshQueue();
+    if (app.screen === 'adminpage' && adminPin) AdminPage.syncLive(); // keep admin cards honest
     if (tab === 'board') await refreshBoard();
     if (tab === 'log') await refreshHistory();
     if (me.guest) return; // no account -> nothing to notify
