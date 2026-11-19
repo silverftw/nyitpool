@@ -1178,6 +1178,10 @@
       <div class="sec-h">Audit log</div>
       <div class="card tight" id="adm-audit"></div>
       <div id="adm-audit-pager"></div>
+
+      <div class="sec-h">Recently skipped</div>
+      <p class="fine" style="margin:-6px 0 0">Every party voted off the table in the last 7 days, with who voted.</p>
+      <div id="adm-skips" style="display:flex;flex-direction:column;gap:10px"></div>
     </div>
   </section>
 
@@ -2922,9 +2926,30 @@ const Hub = (() => {
       } catch { /* pin */ }
     }
 
+    /* every recently skipped table-wide (mirror of the Me-tab skip card) */
+    async function refreshSkips() {
+      const box = $('#adm-skips');
+      box.innerHTML = '';
+      try {
+        const { skips } = await api('/admin/skip-history');
+        if (!skips.length) { box.append(el('div', 'fine', 'No skipped parties in the last 7 days.')); return; }
+        skips.forEach(s => {
+          const card = el('div', 'pend');
+          const names = s.members.map(m => m.registered
+            ? m.name + (m.username ? ' @' + m.username : '') : m.name).join(' & ');
+          card.append(el('b', null, fmtWhen(s.skipped_at) + ' · ' + s.format + ' party'));
+          card.append(el('div', 'fine', 'With: ' + names));
+          card.append(el('div', 'fine',
+            'Voted to skip: ' + s.voters.map(v => v.nickname + (v.username ? ' @' + v.username : '')).join(', ')));
+          box.append(card);
+        });
+      } catch { box.append(el('div', 'fine', 'Admin pin required.')); }
+    }
+
     async function refreshTail() {
       await refreshPlayers();
       await refreshAudit();
+      await refreshSkips();
     }
 
     return { refresh, syncLive };

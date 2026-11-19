@@ -1352,6 +1352,43 @@ async function handleApi(request, env, url) {
     return json({ skips });
   }
 
+  /* the same skip record for admins: every recently skipped party with the
+     voters named — identical shape to /api/me/skip-history minus the
+     "party must include me" filter */
+  if (pathname === '/api/admin/skip-history' && method === 'GET') {
+    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const week = Date.now() - 7 * 24 * 3600 * 1000;
+    const { results: rows } = await env.DB.prepare(
+      `SELECT p.id, p.format, MAX(v.created_at) AS skipped_at,
+              p.p1_user_id, p.p1_guest_name, u1.nickname AS p1_nick, u1.username AS p1_user,
+              p.p2_user_id, p.p2_guest_name, u2.nickname AS p2_nick, u2.username AS p2_user
+       FROM queue_parties p
+       JOIN skip_votes v ON v.party_id = p.id
+       LEFT JOIN users u1 ON u1.id = p.p1_user_id
+       LEFT JOIN users u2 ON u2.id = p.p2_user_id
+       WHERE p.status = 'skipped' AND v.created_at > ?1
+       GROUP BY p.id ORDER BY skipped_at DESC LIMIT 20`
+    ).bind(week).all();
+    const skips = [];
+    for (const r of rows) {
+      const { results: voters } = await env.DB.prepare(
+        `SELECT u.nickname, u.username FROM skip_votes v
+         JOIN users u ON u.id = v.voter_user_id
+         WHERE v.party_id = ? ORDER BY v.created_at`
+      ).bind(r.id).all();
+      const member = (uid, nick, uname, guest) => uid
+        ? { name: nick, username: uname, registered: true }
+        : guest ? { name: 'Guest: ' + guest, username: null, registered: false } : null;
+      skips.push({
+        party_id: r.id, format: r.format, skipped_at: r.skipped_at,
+        members: [member(r.p1_user_id, r.p1_nick, r.p1_user, r.p1_guest_name),
+                  member(r.p2_user_id, r.p2_nick, r.p2_user, r.p2_guest_name)].filter(Boolean),
+        voters,
+      });
+    }
+    return json({ skips });
+  }
+
   if (pathname === '/api/notifications' && method === 'GET') {
     const user = await requireUser(request, env);
     // the 5s poll only needs ids + status (badge counts, unlock state) — full
