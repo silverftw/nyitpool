@@ -211,6 +211,36 @@ const PARTY_SELECT = `
   LEFT JOIN users tu ON tu.id = pi.target_user_id
 `;
 
+/* full detail for a pending/disputed match: rosters, both teams, outstanding
+   confirmations — only served on the fetch-on-open /api/pending endpoint,
+   never on the 5s notification poll (rosters: admins rule on disputes) */
+const PENDING_DETAIL = `
+  pm.id, pm.match_type, pm.format, pm.winner_team, pm.status, pm.created_at,
+  (SELECT COUNT(*) FROM pending_match_players x
+   WHERE x.pending_match_id = pm.id AND x.confirmed = 0) AS unconfirmed,
+  (SELECT group_concat(
+     CASE WHEN mp.user_id IS NOT NULL
+          THEN (SELECT nickname || ' @' || username FROM users u WHERE u.id = mp.user_id)
+          ELSE 'Guest: ' || mp.guest_name END, ' | ')
+   FROM pending_match_players mp WHERE mp.pending_match_id = pm.id AND mp.team = 1) AS team1,
+  (SELECT group_concat(
+     CASE WHEN mp.user_id IS NOT NULL
+          THEN (SELECT nickname || ' @' || username FROM users u WHERE u.id = mp.user_id)
+          ELSE 'Guest: ' || mp.guest_name END, ' | ')
+   FROM pending_match_players mp WHERE mp.pending_match_id = pm.id AND mp.team = 2) AS team2,
+  (SELECT group_concat(
+     CASE WHEN mp.user_id IS NOT NULL
+          THEN (SELECT nickname || ' @' || username FROM users u WHERE u.id = mp.user_id)
+          ELSE mp.guest_name END, ', ')
+   FROM pending_match_players mp
+   WHERE mp.pending_match_id = pm.id AND mp.confirmed = 0) AS awaiting_names,
+  (SELECT group_concat(
+     CASE WHEN mp.user_id IS NOT NULL
+          THEN (SELECT nickname || ' @' || username FROM users u WHERE u.id = mp.user_id)
+          ELSE mp.guest_name END, ', ')
+   FROM pending_match_players mp
+   WHERE mp.pending_match_id = pm.id AND mp.confirmed = 1) AS confirmed_names`;
+
 function shapeParty(row) {
   const mk = (uid, nick, user, elo, guest) => uid
     ? { id: uid, name: nick, username: user, elo: Math.round(elo), registered: true }
@@ -1293,38 +1323,33 @@ async function handleApi(request, env, url) {
 
   if (pathname === '/api/notifications' && method === 'GET') {
     const user = await requireUser(request, env);
-    // rosters: who was on which team (nickname @username / guest) so admins can rule on a dispute
-    const PENDING_DETAIL = `
-      pm.id, pm.match_type, pm.format, pm.winner_team, pm.status, pm.created_at,
-      (SELECT COUNT(*) FROM pending_match_players x
-       WHERE x.pending_match_id = pm.id AND x.confirmed = 0) AS unconfirmed,
-      (SELECT group_concat(
-         CASE WHEN mp.user_id IS NOT NULL
-              THEN (SELECT nickname || ' @' || username FROM users u WHERE u.id = mp.user_id)
-              ELSE 'Guest: ' || mp.guest_name END, ' | ')
-       FROM pending_match_players mp WHERE mp.pending_match_id = pm.id AND mp.team = 1) AS team1,
-      (SELECT group_concat(
-         CASE WHEN mp.user_id IS NOT NULL
-              THEN (SELECT nickname || ' @' || username FROM users u WHERE u.id = mp.user_id)
-              ELSE 'Guest: ' || mp.guest_name END, ' | ')
-       FROM pending_match_players mp WHERE mp.pending_match_id = pm.id AND mp.team = 2) AS team2,
-      (SELECT group_concat(
-         CASE WHEN mp.user_id IS NOT NULL
-              THEN (SELECT nickname || ' @' || username FROM users u WHERE u.id = mp.user_id)
-              ELSE mp.guest_name END, ', ')
-       FROM pending_match_players mp
-       WHERE mp.pending_match_id = pm.id AND mp.confirmed = 0) AS awaiting_names,
-      (SELECT group_concat(
-         CASE WHEN mp.user_id IS NOT NULL
-              THEN (SELECT nickname || ' @' || username FROM users u WHERE u.id = mp.user_id)
-              ELSE mp.guest_name END, ', ')
-       FROM pending_match_players mp
-       WHERE mp.pending_match_id = pm.id AND mp.confirmed = 1) AS confirmed_names`;
+    // the 5s poll only needs ids + status (badge counts, unlock state) — full
+    // rosters live on /api/pending so closed screens stop paying for them
     const { results } = await env.DB.prepare(
-      `SELECT ${PENDING_DETAIL}
+      `SELECT pm.id, pm.status
        FROM pending_matches pm JOIN pending_match_players mp ON mp.pending_match_id = pm.id
        WHERE mp.user_id = ? AND mp.confirmed = 0`
     ).bind(user.id).all();
+    const admin = await isAdmin(request, env);
+    let adminList = null;
+    if (admin) {
+      adminList = (await env.DB.prepare(
+        `SELECT id, status FROM pending_matches WHERE status IN ('pending','disputed')
+         ORDER BY status DESC, id DESC`
+      ).all()).results;
+    }
+    return json({ notifications: results, admin: adminList, admin_unlocked: admin });
+  }
+
+  if (pathname === '/api/pending' && method === 'GET') {
+    // fetch-on-open detail (Me-tab confirmations + the admin pending section);
+    // same lists the old /api/notifications carried, now off the poll path
+    const user = await requireUser(request, env);
+    const mine = (await env.DB.prepare(
+      `SELECT ${PENDING_DETAIL}
+       FROM pending_matches pm JOIN pending_match_players mp ON mp.pending_match_id = pm.id
+       WHERE mp.user_id = ? AND mp.confirmed = 0`
+    ).bind(user.id).all()).results;
     const admin = await isAdmin(request, env);
     let adminList = null;
     if (admin) {
@@ -1333,7 +1358,7 @@ async function handleApi(request, env, url) {
          WHERE pm.status IN ('pending','disputed') ORDER BY pm.status DESC, pm.id DESC`
       ).all()).results;
     }
-    return json({ notifications: results, admin: adminList, admin_unlocked: admin });
+    return json({ mine, admin: adminList, admin_unlocked: admin });
   }
 
   m = pathname.match(/^\/api\/matches\/(\d+)\/respond$/);
