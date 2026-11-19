@@ -173,6 +173,21 @@ async function clearQueue(db) {
   ]);
 }
 
+/* dead-row purge: 'skipped' parties are terminal and nothing reads them after
+   the day closes (skip votes already die with the nightly clear), so the
+   parties table would otherwise hold every party ever. Delete them at most
+   once a day, keeping only the last 24h so a same-evening skip still exists
+   while its players are around. FKs cascade — each dead party's skip_votes
+   and team_up_requests go with it. */
+const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+let lastPurgeAt = 0;
+async function purgeDeadPartiesIfDue(db) {
+  if (Date.now() - lastPurgeAt < PURGE_INTERVAL_MS) return;
+  lastPurgeAt = Date.now(); // set first: concurrent polls must not double-run
+  await db.prepare("DELETE FROM queue_parties WHERE status = 'skipped' AND created_at < ?")
+    .bind(Date.now() - PURGE_INTERVAL_MS).run();
+}
+
 async function effectiveMode(db, env) {
   const { override, schedule } = await queueConfig(db);
   return { mode: override || windowMode(env, schedule), override, schedule };
@@ -689,6 +704,7 @@ async function handleApi(request, env, url) {
   if (pathname === '/api/queue' && method === 'GET') {
     const eff = await effectiveMode(env.DB, env);
     if (eff.mode === 'offline') await clearQueue(env.DB); // window closed or admin offline
+    await purgeDeadPartiesIfDue(env.DB); // day-end cleanup of terminal party rows
     const { results } = await env.DB.prepare(
       PARTY_SELECT + ` WHERE p.status IN ('playing', 'waiting')
                        ORDER BY CASE p.status WHEN 'playing' THEN 0 ELSE 1 END, p.position`
