@@ -2477,10 +2477,10 @@ const Hub = (() => {
     mineBox.innerHTML = '';
     $('#a-admin-page').hidden = !adminPin;
     try {
-      const { notifications } = await api('/notifications');
-      setBell(notifications.length);
-      if (!notifications.length) mineBox.append(el('div', 'fine', 'Nothing waiting on you. 🎉'));
-      notifications.forEach(n => {
+      const { mine } = await api('/pending'); // full rosters, fetched only with the tab open
+      setBell(mine.length);
+      if (!mine.length) mineBox.append(el('div', 'fine', 'Nothing waiting on you. 🎉'));
+      mine.forEach(n => {
         const card = el('div', 'pend' + (n.status === 'disputed' ? ' disputed' : ''));
         card.append(pendDetail(n));
         const btns = el('div', 'btns');
@@ -2601,7 +2601,7 @@ const Hub = (() => {
       const pend = $('#adm-pending');
       pend.innerHTML = '';
       try {
-        const { admin } = await api('/notifications');
+        const { admin } = await api('/pending'); // full rosters for dispute rulings, fetched only with the page open
         const all = admin || [];
         if (!all.length) pend.append(el('div', 'fine', 'No pending or disputed matches.'));
         const mkCard = n => {
