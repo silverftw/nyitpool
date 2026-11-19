@@ -1143,7 +1143,7 @@
       </div>
 
       <div class="sec-h">Live queue parties</div>
-      <p class="fine" style="margin:-6px 0 0">Fix rosters — search a registered player or type a guest name. Reorder the line and set who is on the table.</p>
+      <p class="fine" style="margin:-6px 0 0">Fix rosters — search a registered player or type a guest name; edits save themselves. Reorder the line and set who is on the table.</p>
       <button id="adm-add-party" class="btn ghost tiny" type="button" style="align-self:flex-start;border-style:dashed">+ Add blank party slot</button>
       <div id="adm-parties" style="display:flex;flex-direction:column;gap:10px"></div>
 
@@ -2675,7 +2675,7 @@ const Hub = (() => {
         if (inp.dataset.uid) return { user_id: Number(inp.dataset.uid) };
         return v ? { guest_name: v } : null;
       };
-      const mkSlotRow = (label, player) => {
+      const mkSlotRow = (label, player, onEdit) => {
         const row = el('div', 'aslot');
         row.append(el('span', 'lb', label));
         const inp = document.createElement('input');
@@ -2686,13 +2686,15 @@ const Hub = (() => {
         inp.dataset.orig = inp.value; // syncLive's dirty check: has this slot been edited?
         inp.dataset.origUid = inp.dataset.uid || '';
         row.append(inp); // attach first — mkPicker needs input.parentElement
-        mkPicker(inp);
+        mkPicker(inp, { onPick: onEdit });
+        inp.addEventListener('change', () => onEdit && onEdit()); // blur after edit — auto-save
         const rm = el('button', 'rm-btn', '×');
         rm.type = 'button';
         rm.title = 'Clear this slot';
         rm.addEventListener('click', () => {
           inp.value = ''; delete inp.dataset.uid;
           inp.dataset.orig = ''; inp.dataset.origUid = '';
+          if (onEdit) onEdit();
         });
         row.append(rm);
         return row;
@@ -2705,29 +2707,43 @@ const Hub = (() => {
         top.append(el('span', 'chip', p.format.toUpperCase()));
         card.append(top);
 
-        const r1 = mkSlotRow('P1', p.p1);
-        card.append(r1);
         let r2 = null;
         const rosterBody = () => ({ p1: slotBody(r1), p2: r2 ? slotBody(r2) : null });
+        const save = async fn => { await fn(); await refresh(); refreshAll(); };
+        /* roster edits auto-save — no Save button. Edits land on change (blur),
+           picker pick, or slot clear; in-flight edits queue, no-op edits skip. */
+        let savedSig, saving = false, queued = false;
+        const autoSave = async () => {
+          const sig = () => JSON.stringify(rosterBody());
+          if (sig() === savedSig) return;
+          if (saving) { queued = true; return; }
+          saving = true;
+          try {
+            do {
+              queued = false;
+              await save(() => api('/admin/parties/' + p.id, { method: 'PUT', body: rosterBody() }));
+              savedSig = sig();
+            } while (queued && sig() !== savedSig);
+          } catch (ex) { alert(ex.message); }
+          saving = false;
+        };
+        const r1 = mkSlotRow('P1', p.p1, autoSave);
+        card.append(r1);
         const btns = el('div', 'btns');
         if (p.format === 'duo') {
-          r2 = mkSlotRow('P2', p.p2);
+          r2 = mkSlotRow('P2', p.p2, autoSave);
           card.append(r2);
         } else {
           const add = el('button', 'add-btn', '+ Add player');
           add.type = 'button';
           add.addEventListener('click', () => {
-            r2 = mkSlotRow('P2', null);
+            r2 = mkSlotRow('P2', null, autoSave);
             card.insertBefore(r2, btns);
             add.remove();
           });
           card.append(add);
         }
-
-        const save = async fn => { await fn(); await refresh(); refreshAll(); };
-        btns.append(actBtn('💾 Save roster', async () => {
-          await save(() => api('/admin/parties/' + p.id, { method: 'PUT', body: rosterBody() }));
-        }, 'Save roster', 'btn tiny'));
+        savedSig = JSON.stringify(rosterBody());
         if (p.status === 'playing') {
           btns.append(actBtn('⏬ Back to line', async () => {
             await save(() => api('/admin/parties/' + p.id + '/demote', { method: 'POST' }));
