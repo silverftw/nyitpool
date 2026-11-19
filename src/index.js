@@ -1459,11 +1459,15 @@ async function handleApi(request, env, url) {
   }
 
   if (pathname === '/api/matches' && method === 'GET') {
-    // filters: ?player=<username or nickname, exact> &since=<epoch ms> &until=<epoch ms> &limit=
+    // filters: ?player=<username or nickname, exact> &since=<epoch ms> &until=<epoch ms> &limit= &page=
     const player = url.searchParams.get('player');
     const since = Number(url.searchParams.get('since')) || 0;
     const until = Number(url.searchParams.get('until')) || 0;
-    const limit = clamp(Number(url.searchParams.get('limit')) || 20, 1, 100);
+    // ?page= callers (the Log tab pager) get 10-per-page unless they pass limit;
+    // legacy consumers without page keep the old flat limit-20 shape
+    const paged = url.searchParams.has('page');
+    const page = Math.max(1, Number(url.searchParams.get('page')) || 1);
+    const limit = clamp(Number(url.searchParams.get('limit')) || (paged ? 10 : 20), 1, 100);
     // rosters come from ONE indexed IN() pass below (team1/team2 strings are
     // rebuilt in JS from it) — the old per-match group_concat subqueries
     // full-scanned match_players without an index: ~10k rows read per call
@@ -1476,9 +1480,13 @@ async function handleApi(request, env, url) {
                 WHERE mp.match_id = m.id AND (LOWER(u.username) = LOWER(?) OR LOWER(u.nickname) = LOWER(?)))`;
       params.push(player, player);
     }
-    sql += ' ORDER BY m.played_at DESC LIMIT ?';
-    params.push(limit);
+    // fetch one extra row to flag has_more — avoids a COUNT(*) that would scan
+    // the whole filtered set just to size the pager
+    sql += ' ORDER BY m.played_at DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, (page - 1) * limit);
     const { results } = await env.DB.prepare(sql).bind(...params).all();
+    const hasMore = results.length > limit;
+    if (hasMore) results.length = limit;
     // per-player rosters with rating context (rating_before/after, NULL for guests
     // and for rows predating migration 0006 until the next rating replay)
     if (results.length) {
@@ -1509,17 +1517,24 @@ async function handleApi(request, env, url) {
         m.team2 = m.players.filter(p => p.team === 2).map(p => p.name).join(' | ');
       }
     }
-    return json({ matches: results });
+    return json({ matches: results, page, has_more: hasMore });
   }
 
   if (pathname === '/api/admin/audit' && method === 'GET') {
     if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    // ?page= -> 10-per-page slices (pager reads only its page server-side);
+    // no page -> legacy flat 200-row response for existing consumers
+    const paged = url.searchParams.has('page');
+    const page = Math.max(1, Number(url.searchParams.get('page')) || 1);
+    const limit = paged ? 10 : 200;
     const { results } = await env.DB.prepare(
       `SELECT a.id, a.at, a.type, a.detail, u.nickname AS actor
        FROM audit_log a LEFT JOIN users u ON u.id = a.actor_user_id
-       ORDER BY a.id DESC LIMIT 200`
-    ).all();
-    return json({ audit: results });
+       ORDER BY a.id DESC LIMIT ? OFFSET ?`
+    ).bind(limit + 1, (page - 1) * limit).all();
+    const hasMore = results.length > limit;
+    if (hasMore) results.length = limit;
+    return json({ audit: results, page, has_more: hasMore });
   }
 
   if (pathname === '/api/admin/queue-key' && method === 'GET') {
