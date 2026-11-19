@@ -1528,7 +1528,8 @@ async function handleApi(request, env, url) {
     const page = Math.max(1, Number(url.searchParams.get('page')) || 1);
     const limit = paged ? 10 : 200;
     const { results } = await env.DB.prepare(
-      `SELECT a.id, a.at, a.type, a.detail, u.nickname AS actor
+      `SELECT a.id, a.at, a.type, a.detail, u.nickname AS actor, u.username AS actor_user,
+              (a.actor_user_id IS NULL) AS is_admin
        FROM audit_log a LEFT JOIN users u ON u.id = a.actor_user_id
        ORDER BY a.id DESC LIMIT ? OFFSET ?`
     ).bind(limit + 1, (page - 1) * limit).all();

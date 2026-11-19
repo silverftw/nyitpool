@@ -553,6 +553,9 @@
   }
   .audit:last-child{border-bottom:none}
   .audit .t{color:var(--felt);font-weight:800;font-size:.7rem;flex-shrink:0}
+  .audit .a{flex-shrink:0;min-width:92px;font-size:.7rem;color:var(--text)}
+  .audit .a .au{color:var(--faint)}
+  .audit .a .aa{color:var(--gold);font-weight:800}
   .audit .d{color:var(--muted);flex:1;min-width:0}
   .audit .w{color:var(--faint);font-size:.68rem;flex-shrink:0;font-variant-numeric:tabular-nums}
   .pager{display:flex;gap:10px;justify-content:center;align-items:center;margin-top:12px}
@@ -2909,7 +2912,16 @@ const Hub = (() => {
         log.forEach(a => {
           const row = el('div', 'audit');
           row.append(el('span', 't', a.type));
-          row.append(el('span', 'd', (a.actor && a.actor !== 'system' ? a.actor + ' — ' : '') + a.detail));
+          const who = el('span', 'a');
+          if (a.actor) {
+            who.append(el('span', 'an', a.actor));
+            if (a.actor_user) who.append(el('span', 'au', ' @' + a.actor_user));
+            if (a.is_admin) who.append(el('span', 'aa', ' (Admin)'));
+          } else {
+            who.append(el('span', 'aa', a.is_admin ? '(Admin)' : '—'));
+          }
+          row.append(who);
+          row.append(el('span', 'd', a.detail));
           row.append(el('span', 'w', fmtWhen(a.at)));
           feed.append(row);
         });
