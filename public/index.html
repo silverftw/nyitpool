@@ -555,6 +555,8 @@
   .audit .t{color:var(--felt);font-weight:800;font-size:.7rem;flex-shrink:0}
   .audit .d{color:var(--muted);flex:1;min-width:0}
   .audit .w{color:var(--faint);font-size:.68rem;flex-shrink:0;font-variant-numeric:tabular-nums}
+  .pager{display:flex;gap:10px;justify-content:center;align-items:center;margin-top:12px}
+  .pager .pg-info{color:var(--muted);font-size:.78rem;font-variant-numeric:tabular-nums;min-width:56px;text-align:center}
   table.simple{width:100%;border-collapse:collapse;font-size:.82rem}
   table.simple th{
     text-align:left;font-size:.62rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase;
@@ -1004,6 +1006,7 @@
             </div>
           </div>
           <div id="hist-list" style="display:flex;flex-direction:column;gap:10px"></div>
+          <div id="hist-pager"></div>
         </div>
 
         <!-- RANKS PANE -->
@@ -1011,6 +1014,7 @@
           <p class="board-note"><b>Wondering what RD is?</b> RD is rating deviation — it's how much your rating is expected to swing. A high RD means inconsistent results so far; it shrinks as you play more games.</p>
           <div id="board-podium" class="podium" hidden></div>
           <div id="board-list" style="display:flex;flex-direction:column;gap:10px"></div>
+          <div id="board-pager"></div>
           <p class="fine" style="text-align:center;margin:0">Glicko-2 · ratings update after every confirmed ranked match</p>
         </div>
 
@@ -1047,6 +1051,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+              <div class="cl-item"><span class="chip">PR52</span><span>Long tables now paginate 10 per page — match history, Ranks, admin players &amp; audit</span></div>
               <div class="cl-item"><span class="chip">PR51</span><span>New tier badges: Ascendant · Unreal · Champion top the board; 8-Ball Elite is now Elite</span></div>
               <div class="cl-item"><span class="chip">PR50</span><span>Ranks podium now reads 2nd — 1st — 3rd, Olympic-style</span></div>
               <div class="cl-item"><span class="chip">PR41</span><span>Skip votes ask first — and your account shows who voted to skip you</span></div>
@@ -1160,6 +1165,7 @@
 
       <div class="sec-h">Players</div>
       <div class="hist-wrap"><table class="simple" id="adm-players"></table></div>
+      <div id="adm-players-pager"></div>
       <div class="acct-row">
         <button id="adm-recalc" class="btn tiny" type="button"
           title="Rebuilds everyone's Glicko rating and W–L record from the full match history — use after bulk history fixes.">↺ Recalculate all ratings</button>
@@ -1171,6 +1177,7 @@
 
       <div class="sec-h">Audit log</div>
       <div class="card tight" id="adm-audit"></div>
+      <div id="adm-audit-pager"></div>
     </div>
   </section>
 
@@ -1285,6 +1292,24 @@ function el(tag, cls, text) {
   if (cls) n.className = cls;
   if (text != null) n.textContent = text;
   return n;
+}
+
+/* shared pager under every long table: ‹ prev / Page N / next ›
+   state = { page, has_more }; onChange(nextPage) re-renders the table */
+function mkPager(state, onChange) {
+  const nav = el('div', 'pager');
+  const prev = el('button', 'btn tiny', '‹');
+  prev.type = 'button';
+  prev.disabled = state.page <= 1;
+  prev.setAttribute('aria-label', 'Previous page');
+  prev.addEventListener('click', () => onChange(state.page - 1));
+  const next = el('button', 'btn tiny', '›');
+  next.type = 'button';
+  next.disabled = !state.has_more;
+  next.setAttribute('aria-label', 'Next page');
+  next.addEventListener('click', () => onChange(state.page + 1));
+  nav.append(prev, el('span', 'pg-info', 'Page ' + state.page), next);
+  return nav;
 }
 
 /* ==================== Web Audio — synthesized cues ==================== */
@@ -2329,6 +2354,9 @@ const Hub = (() => {
     return sameDay ? 'Today ' + hm : (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
   };
 
+  /* history pages server-side (10/page via the API's ?page=); filters reset to page 1 */
+  let histPage = 1;
+
   async function refreshHistory() {
     if (tab !== 'log') return;
     const player = $('#hist-player').dataset.uid
@@ -2338,11 +2366,13 @@ const Hub = (() => {
     const qs = new URLSearchParams();
     if (player) qs.set('player', player.replace(/^@/, ''));
     if (days) qs.set('since', String(Date.now() - days * 86400000));
+    qs.set('page', String(histPage));
     try {
-      const rows = (await api('/matches' + (qs.toString() ? '?' + qs : ''))).matches;
+      const data = await api('/matches?' + qs);
+      const rows = data.matches;
       const wrap = $('#hist-list');
       wrap.innerHTML = '';
-      if (!rows.length) wrap.append(el('div', 'q-empty', 'No matches yet.'));
+      if (!rows.length) wrap.append(el('div', 'q-empty', histPage > 1 ? 'No matches on this page.' : 'No matches yet.'));
       rows.forEach(m => {
         const card = el('div', 'hist');
         const top = el('div', 'top');
@@ -2389,13 +2419,20 @@ const Hub = (() => {
         }
         wrap.append(card);
       });
+      const pg = $('#hist-pager');
+      pg.innerHTML = '';
+      if (rows.length || histPage > 1) {
+        pg.append(mkPager({ page: data.page, has_more: data.has_more },
+          p => { histPage = p; refreshHistory(); }));
+      }
     } catch { /* keep old */ }
   }
 
-  mkPicker($('#hist-player'), { onPick: () => refreshHistory() });
-  $('#hist-player').addEventListener('change', () => refreshHistory());
+  mkPicker($('#hist-player'), { onPick: () => { histPage = 1; refreshHistory(); } });
+  $('#hist-player').addEventListener('change', () => { histPage = 1; refreshHistory(); });
   $$('#hist-time button').forEach(b => b.addEventListener('click', () => {
     $$('#hist-time button').forEach(x => x.classList.toggle('on', x === b));
+    histPage = 1;
     refreshHistory();
   }));
 
@@ -2419,49 +2456,68 @@ const Hub = (() => {
     : t === 'Rack Shark' ? ' shark'
     : '';
 
+  /* board pages client-side (fully fetched already) — podium + tier badges stay
+     GLOBAL: ranks/tiers always count from the true top, whatever page is open */
+  const BOARD_PER_PAGE = 10;
+  let boardPage = 1;
+  let boardRows = [];
+
+  function renderBoardPage() {
+    const podium = $('#board-podium');
+    const list = $('#board-list');
+    list.innerHTML = '';
+    podium.hidden = true;
+    podium.innerHTML = '';
+    if (!boardRows.length) { list.append(el('div', 'q-empty', 'No players yet — create an account and log a match.')); return; }
+    if (boardRows.length >= 3) { // podium: 2nd · 1st · 3rd
+      podium.hidden = false;
+      const mkPod = (u, medal, cls) => {
+        const pod = el('div', 'pod ' + cls);
+        pod.append(el('div', 'medal', medal));
+        pod.append(el('b', null, u.nickname));
+        pod.append(el('span', 'elo mono', String(Math.round(u.glicko_rating))));
+        return pod;
+      };
+      podium.append(mkPod(boardRows[1], '🥈', 'p2'), mkPod(boardRows[0], '🥇', 'p1'), mkPod(boardRows[2], '🥉', 'p3'));
+    }
+    if ((boardPage - 1) * BOARD_PER_PAGE >= boardRows.length) boardPage = 1; // list shrank under us
+    const start = (boardPage - 1) * BOARD_PER_PAGE;
+    boardRows.slice(start, start + BOARD_PER_PAGE).forEach((u, k) => {
+      const i = start + k; // global rank — position-based tiers count from the real top
+      const games = u.ranked_wins + u.ranked_losses;
+      const t = tier(i, u.glicko_rating, games);
+      const row = el('div', 'lrow');
+      row.append(el('span', 'rank', String(i + 1)));
+      const nm = el('div', 'nm');
+      const b = el('b');
+      b.append(document.createTextNode(u.nickname + ' '));
+      b.append(el('span', 'tier' + (t === 'Placement' ? ' grey' : tierCls(t)), t));
+      nm.append(b);
+      nm.append(el('small', null, '@' + u.username));
+      row.append(nm);
+      const nums = el('div', 'nums');
+      const elo = el('div', 'elo', String(Math.round(u.glicko_rating)) + ' ');
+      elo.append(el('small', null, '± ' + Math.round(u.glicko_rd)));
+      nums.append(elo);
+      nums.append(el('small', null, games < 10
+        ? (10 - games) + ' placement game' + (10 - games === 1 ? '' : 's') + ' left'
+        : 'R ' + u.ranked_wins + '–' + u.ranked_losses));
+      row.append(nums);
+      list.append(row);
+    });
+    const pg = $('#board-pager');
+    pg.innerHTML = '';
+    if (boardRows.length > BOARD_PER_PAGE) {
+      pg.append(mkPager({ page: boardPage, has_more: start + BOARD_PER_PAGE < boardRows.length },
+        p => { boardPage = p; renderBoardPage(); }));
+    }
+  }
+
   async function refreshBoard() {
     if (tab !== 'board') return;
     try {
-      const lb = (await api('/leaderboard')).leaderboard;
-      const podium = $('#board-podium');
-      const list = $('#board-list');
-      list.innerHTML = '';
-      podium.hidden = true;
-      podium.innerHTML = '';
-      if (!lb.length) { list.append(el('div', 'q-empty', 'No players yet — create an account and log a match.')); return; }
-      if (lb.length >= 3) { // podium: 2nd · 1st · 3rd
-        podium.hidden = false;
-        const mkPod = (u, medal, cls) => {
-          const pod = el('div', 'pod ' + cls);
-          pod.append(el('div', 'medal', medal));
-          pod.append(el('b', null, u.nickname));
-          pod.append(el('span', 'elo mono', String(Math.round(u.glicko_rating))));
-          return pod;
-        };
-        podium.append(mkPod(lb[1], '🥈', 'p2'), mkPod(lb[0], '🥇', 'p1'), mkPod(lb[2], '🥉', 'p3'));
-      }
-      lb.forEach((u, i) => {
-        const games = u.ranked_wins + u.ranked_losses;
-        const t = tier(i, u.glicko_rating, games);
-        const row = el('div', 'lrow');
-        row.append(el('span', 'rank', String(i + 1)));
-        const nm = el('div', 'nm');
-        const b = el('b');
-        b.append(document.createTextNode(u.nickname + ' '));
-        b.append(el('span', 'tier' + (t === 'Placement' ? ' grey' : tierCls(t)), t));
-        nm.append(b);
-        nm.append(el('small', null, '@' + u.username));
-        row.append(nm);
-        const nums = el('div', 'nums');
-        const elo = el('div', 'elo', String(Math.round(u.glicko_rating)) + ' ');
-        elo.append(el('small', null, '± ' + Math.round(u.glicko_rd)));
-        nums.append(elo);
-        nums.append(el('small', null, games < 10
-          ? (10 - games) + ' placement game' + (10 - games === 1 ? '' : 's') + ' left'
-          : 'R ' + u.ranked_wins + '–' + u.ranked_losses));
-        row.append(nums);
-        list.append(row);
-      });
+      boardRows = (await api('/leaderboard')).leaderboard;
+      renderBoardPage();
     } catch { /* keep old render */ }
   }
 
@@ -2804,29 +2860,52 @@ const Hub = (() => {
       renderParties();
     }
 
-    async function refreshTail() {
-      try {
-        const players = (await api('/admin/players')).players;
-        fillTable('#adm-players',
-          ['Player', 'Elo', 'Ranked', 'Joined'],
-          players.map(u => {
-            const nm = document.createDocumentFragment();
-            nm.append(el('b', null, u.nickname));
-            nm.append(el('small', 'at', ' @' + u.username));
-            return [
-              nm,
-              el('span', 'elo-cell mono', String(Math.round(u.glicko_rating))),
-              u.ranked_wins + '–' + u.ranked_losses,
-              fmtWhen(u.created_at),
-            ];
-          }));
-      } catch { /* pin */ }
+    /* players page client-side (the endpoint already returns everyone);
+       audit pages SERVER-side (its row count is the read cost) — the admin's
+       open page survives live refreshes, so page 1 keeps showing fresh rows */
+    const ADM_PER_PAGE = 10;
+    let admPlayersPage = 1;
+    let admPlayersRows = [];
+    let admAuditPage = 1;
 
+    function renderPlayersPage() {
+      if ((admPlayersPage - 1) * ADM_PER_PAGE >= admPlayersRows.length) admPlayersPage = 1;
+      const start = (admPlayersPage - 1) * ADM_PER_PAGE;
+      fillTable('#adm-players',
+        ['Player', 'Elo', 'Ranked', 'Joined'],
+        admPlayersRows.slice(start, start + ADM_PER_PAGE).map(u => {
+          const nm = document.createDocumentFragment();
+          nm.append(el('b', null, u.nickname));
+          nm.append(el('small', 'at', ' @' + u.username));
+          return [
+            nm,
+            el('span', 'elo-cell mono', String(Math.round(u.glicko_rating))),
+            u.ranked_wins + '–' + u.ranked_losses,
+            fmtWhen(u.created_at),
+          ];
+        }));
+      const pg = $('#adm-players-pager');
+      pg.innerHTML = '';
+      if (admPlayersRows.length > ADM_PER_PAGE) {
+        pg.append(mkPager({ page: admPlayersPage, has_more: start + ADM_PER_PAGE < admPlayersRows.length },
+          p => { admPlayersPage = p; renderPlayersPage(); }));
+      }
+    }
+
+    async function refreshPlayers() {
       try {
-        const log = (await api('/admin/audit')).audit;
+        admPlayersRows = (await api('/admin/players')).players;
+        renderPlayersPage();
+      } catch { /* pin */ }
+    }
+
+    async function refreshAudit() {
+      try {
+        const data = await api('/admin/audit?page=' + admAuditPage);
+        const log = data.audit;
         const feed = $('#adm-audit');
         feed.innerHTML = '';
-        if (!log.length) feed.append(el('div', 'fine', 'Nothing yet.'));
+        if (!log.length) feed.append(el('div', 'fine', admAuditPage > 1 ? 'Nothing on this page.' : 'Nothing yet.'));
         log.forEach(a => {
           const row = el('div', 'audit');
           row.append(el('span', 't', a.type));
@@ -2834,7 +2913,18 @@ const Hub = (() => {
           row.append(el('span', 'w', fmtWhen(a.at)));
           feed.append(row);
         });
+        const pg = $('#adm-audit-pager');
+        pg.innerHTML = '';
+        if (log.length || admAuditPage > 1) {
+          pg.append(mkPager({ page: data.page, has_more: data.has_more },
+            p => { admAuditPage = p; refreshAudit(); }));
+        }
       } catch { /* pin */ }
+    }
+
+    async function refreshTail() {
+      await refreshPlayers();
+      await refreshAudit();
     }
 
     return { refresh, syncLive };
