@@ -447,6 +447,12 @@
   .board-note b{color:var(--text)}
   .tier{font-size:.6rem;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);border:1px solid color-mix(in srgb,var(--gold) 45%,var(--line));border-radius:6px;padding:2px 6px}
   .tier.grey{color:var(--muted);border-color:var(--line2)}
+  /* tier rebrand: top of the leaderboard gets position-based badges */
+  .tier.asc{color:#2db52d;border-color:color-mix(in srgb,#2db52d 45%,var(--line))}
+  .tier.unreal{color:#7d3dd4;border-color:color-mix(in srgb,#7d3dd4 45%,var(--line))}
+  .tier.champ{color:#2db5ae;border-color:color-mix(in srgb,#2db5ae 45%,var(--line))}
+  .tier.elite{color:#e8a854;border-color:color-mix(in srgb,#e8a854 45%,var(--line))}
+  .tier.shark{color:#5290a8;border-color:color-mix(in srgb,#5290a8 45%,var(--line))}
 
   /* me: pending cards + changelog */
   .pend{
@@ -1041,6 +1047,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+              <div class="cl-item"><span class="chip">PR51</span><span>New tier badges: Ascendant · Unreal · Champion top the board; 8-Ball Elite is now Elite</span></div>
               <div class="cl-item"><span class="chip">PR50</span><span>Ranks podium now reads 2nd — 1st — 3rd, Olympic-style</span></div>
               <div class="cl-item"><span class="chip">PR41</span><span>Skip votes ask first — and your account shows who voted to skip you</span></div>
               <div class="cl-item"><span class="chip">PR34</span><span>Team up is now a request — duo owners accept or decline</span></div>
@@ -2393,12 +2400,24 @@ const Hub = (() => {
   }));
 
   /* ---------- tab 3: leaderboard ---------- */
-  const tier = (r, rd, games) =>
+  // Tier badge: top 5 of the leaderboard are position-based, the rest rating-based.
+  // Placement (<10 ranked games) still wins over everything.
+  const tier = (rank, r, games) =>
     games < 10 ? 'Placement'
-    : r >= 1700 ? '8-Ball Elite'
+    : rank === 0 ? 'Ascendant'
+    : rank <= 2 ? 'Unreal'
+    : rank <= 4 ? 'Champion'
+    : r >= 1700 ? 'Elite'
     : r >= 1550 ? 'Rack Shark'
     : r >= 1400 ? 'Table Regular'
     : 'Cue Rookie';
+  const tierCls = t =>
+    t === 'Ascendant' ? ' asc'
+    : t === 'Unreal' ? ' unreal'
+    : t === 'Champion' ? ' champ'
+    : t === 'Elite' ? ' elite'
+    : t === 'Rack Shark' ? ' shark'
+    : '';
 
   async function refreshBoard() {
     if (tab !== 'board') return;
@@ -2423,13 +2442,13 @@ const Hub = (() => {
       }
       lb.forEach((u, i) => {
         const games = u.ranked_wins + u.ranked_losses;
-        const t = tier(u.glicko_rating, u.glicko_rd, games);
+        const t = tier(i, u.glicko_rating, games);
         const row = el('div', 'lrow');
         row.append(el('span', 'rank', String(i + 1)));
         const nm = el('div', 'nm');
         const b = el('b');
         b.append(document.createTextNode(u.nickname + ' '));
-        b.append(el('span', 'tier' + (t === 'Placement' ? ' grey' : ''), t));
+        b.append(el('span', 'tier' + (t === 'Placement' ? ' grey' : tierCls(t)), t));
         nm.append(b);
         nm.append(el('small', null, '@' + u.username));
         row.append(nm);

@@ -97,7 +97,7 @@ export function composite(teamPlayers) {
 /** Rank badge tier for a user row. */
 export function rankBadge(rating, rd, rankedGames) {
   if (rd > 110 || rankedGames < 5) return 'Provisional';
-  if (rating >= 1700) return '8-Ball Elite';
+  if (rating >= 1700) return 'Elite';
   if (rating >= 1550) return 'Rack Shark';
   if (rating >= 1400) return 'Table Regular';
   return 'Cue Rookie';
