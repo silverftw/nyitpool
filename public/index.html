@@ -1041,6 +1041,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+              <div class="cl-item"><span class="chip">PR50</span><span>Ranks podium now reads 2nd — 1st — 3rd, Olympic-style</span></div>
               <div class="cl-item"><span class="chip">PR41</span><span>Skip votes ask first — and your account shows who voted to skip you</span></div>
               <div class="cl-item"><span class="chip">PR34</span><span>Team up is now a request — duo owners accept or decline</span></div>
               <div class="cl-item"><span class="chip">PR22</span><span>Shot timer: per-rack extension button + New Rack</span></div>
@@ -2418,7 +2419,7 @@ const Hub = (() => {
           pod.append(el('span', 'elo mono', String(Math.round(u.glicko_rating))));
           return pod;
         };
-        podium.append(mkPod(lb[2], '🥉', 'p3'), mkPod(lb[0], '🥇', 'p1'), mkPod(lb[1], '🥈', 'p2'));
+        podium.append(mkPod(lb[1], '🥈', 'p2'), mkPod(lb[0], '🥇', 'p1'), mkPod(lb[2], '🥉', 'p3'));
       }
       lb.forEach((u, i) => {
         const games = u.ranked_wins + u.ranked_losses;
