@@ -257,9 +257,16 @@ async function userInLiveParty(db, userId, excludeId) {
    (including team-switch detach rules), so nothing else changes. */
 const TEAMUP_TTL_MS = 2 * 60 * 1000;
 
+/* the queue poll runs the lazy expiry sweep on EVERY poll from EVERY device;
+   once a minute per isolate is plenty (the TTL is lazy already — mutation
+   paths still sweep inline before acting, so answering stays fresh) */
+const SWEEP_INTERVAL_MS = 60 * 1000;
+let lastQueueSweepAt = 0;
+
 function expireTeamUps(db) {
   // invite expiry (declines set it directly): a still-open duo whose invite
   // died parks in "stuck" until it finds a partner
+  lastQueueSweepAt = Date.now(); // mutation sweeps count toward the poll gate too
   return db.batch([
     db.prepare(
       "UPDATE team_up_requests SET status = 'expired' WHERE status = 'pending' AND created_at <= ?"
@@ -271,6 +278,13 @@ function expireTeamUps(db) {
                     WHERE kind = 'invite' AND status = 'expired')`
     ),
   ]);
+}
+
+/* poll-path sweep: skip the pair of maintenance UPDATEs unless the last
+   sweep (from a poll or a mutation) is older than SWEEP_INTERVAL_MS */
+async function sweepQueueIfDue(db) {
+  if (Date.now() - lastQueueSweepAt < SWEEP_INTERVAL_MS) return;
+  await expireTeamUps(db);
 }
 
 /* the old instant claim: put `user` in the party's open P2 slot, switching
@@ -649,9 +663,10 @@ async function handleApi(request, env, url) {
       PARTY_SELECT + ` WHERE p.status IN ('playing', 'waiting')
                        ORDER BY CASE p.status WHEN 'playing' THEN 0 ELSE 1 END, p.position`
     ).all();
-    // team-up requests: expire stale ones, then surface this caller's popup
-    // (they own a requested duo) and their own sent request, if any
-    await expireTeamUps(env.DB);
+    // team-up requests: expire stale ones (throttled — see sweepQueueIfDue),
+    // then surface this caller's popup (they own a requested duo) and their
+    // own sent request, if any
+    await sweepQueueIfDue(env.DB);
     const user = await currentUser(request, env);
     let teamupIn = null, teamupOut = null, inviteIn = null;
     if (user) {
