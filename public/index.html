@@ -281,23 +281,25 @@
     background:linear-gradient(180deg,color-mix(in srgb,var(--ok) 10%,transparent),transparent 72%),var(--panel);
     display:flex;flex-direction:column;gap:10px;
   }
-  .vsrow{display:flex;align-items:stretch;gap:8px}
-  .pgraph{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0}
+  .vsrow{display:flex;align-items:stretch;gap:6px}
+  /* two parties up: hard 3-track grid (party | VS | party) so one side can
+     never squeeze the other — minmax(0,1fr) hardening (PR #26 lesson) */
+  .vsrow.two{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:stretch}
+  .pgraph{flex:1;display:flex;flex-direction:column;gap:6px;min-width:0}
   .pman{
-    display:flex;align-items:center;gap:10px;background:var(--panel2);
-    border:1px solid var(--line);border-radius:var(--r-md);padding:9px 11px;min-width:0;
+    display:flex;align-items:center;gap:7px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:var(--r-md);padding:7px 9px;min-width:0;
   }
   .pman .av{
-    flex-shrink:0;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
-    font-weight:900;font-size:.9rem;color:var(--feltink);background:var(--felt);
+    flex-shrink:0;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;
+    font-weight:900;font-size:.74rem;color:var(--feltink);background:var(--felt);
   }
   .pman.g .av{background:#41576b;color:#dfe9f1}
   .pman .nm{flex:1;min-width:0}
-  .pman .nm b{display:block;font-size:.92rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .pman .nm small{color:var(--muted);font-size:.72rem;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .pman .elo{font-weight:800;color:var(--felt);font-size:.86rem;font-variant-numeric:tabular-nums}
-  .pman.g .elo{color:var(--muted)}
-  .vstag{align-self:center;font-weight:900;color:var(--faint)}
+  .pman .nm b{display:block;font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pman .nm small{color:var(--muted);font-size:.68rem;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pman .nm small .elo{color:var(--felt);font-weight:800}
+  .vstag{align-self:center;font-weight:900;color:var(--faint);font-size:.72rem}
   .qrow{
     display:flex;align-items:center;gap:11px;background:var(--panel);
     border:1px solid var(--line);border-radius:var(--r-lg);padding:11px 13px;
@@ -1083,6 +1085,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+              <div class="cl-item"><span class="chip">PR57</span><span>Table card: the two teams now sit side-by-side in fixed halves — nicknames stay readable on phones</span></div>
               <div class="cl-item"><span class="chip">PR56</span><span>Admins now see a pending-match count on the lock button and the admin page</span></div>
               <div class="cl-item"><span class="chip">PR55</span><span>Control the timer from your phone — scan the QR on the timer screen</span></div>
               <div class="cl-item"><span class="chip">PR52</span><span>Long tables now paginate 10 per page — match history, Ranks, admin players &amp; audit</span></div>
@@ -1903,15 +1906,22 @@ const Hub = (() => {
     if (qMode.mode === 'duo-only' && wantSolo) $('#join-format [data-v="duo"]').click();
   }
 
-  /* mockup player row: avatar pip (green=registered, grey=guest) + name + elo */
+  /* mockup player row: avatar pip (green=registered, grey=guest) + name, with
+     @user · elo moved under the name — keeps the name wide in the table card's
+     half-column instead of competing with it on one line */
   function pman(p) {
     const m = el('div', 'pman' + (p.registered ? '' : ' g'));
     m.append(el('span', 'av', (p.name || '?').trim().charAt(0).toUpperCase()));
     const nm = el('span', 'nm');
     nm.append(el('b', null, p.name));
-    nm.append(el('small', null, p.registered ? '@' + p.username : 'guest'));
+    if (p.registered) {
+      const sub = el('small', null, '@' + p.username);
+      if (p.elo != null) sub.append(el('span', 'elo', ' · ' + p.elo));
+      nm.append(sub);
+    } else {
+      nm.append(el('small', null, 'guest'));
+    }
     m.append(nm);
-    m.append(el('span', 'elo', p.registered && p.elo != null ? String(p.elo) : '—'));
     return m;
   }
 
@@ -2173,7 +2183,7 @@ const Hub = (() => {
       head.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap';
       head.append(el('span', 'chip ok', playing.length === 2 ? 'ON THE TABLE' : 'HOLDING THE TABLE'));
       head.append(el('span', 'fine', 'winner stays · challenger next'));
-      const vsrow = el('div', 'vsrow');
+      const vsrow = el('div', 'vsrow' + (playing[1] ? ' two' : ''));
       const grp = p => {
         const g = el('div', 'pgraph');
         if (p.p1) g.append(pman(p.p1));
