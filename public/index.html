@@ -730,6 +730,33 @@
   }
   #screen-timer .topbar, #screen-timer .clocks, #screen-timer .actionbar{position:relative;z-index:1}
 
+  /* ---------- phone remote (T16): status chip in the timer topbar + pairing popover ---------- */
+  #remote-chip{
+    font-size:.78rem;font-weight:700;letter-spacing:.08em;color:var(--muted);
+    border:1px solid var(--line);border-radius:999px;padding:4px 12px;white-space:nowrap;
+    display:inline-flex;align-items:center;gap:6px;transition:.15s;
+  }
+  #remote-chip:hover{color:var(--text);border-color:var(--line2)}
+  #remote-chip .rdot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none;transition:.2s}
+  #remote-chip.live .rdot{background:var(--ok);box-shadow:0 0 7px var(--ok)}
+  #remote-chip.live{color:var(--text)}
+  #remote-chip.err .rdot{background:var(--danger)}
+  #remote-pop{
+    position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;
+    background:rgba(4,7,10,.72);backdrop-filter:blur(3px);
+  }
+  #remote-pop .card{
+    background:var(--panel);border:1px solid var(--line2);border-radius:var(--r-lg);
+    padding:22px 26px;display:flex;flex-direction:column;align-items:center;gap:12px;
+    box-shadow:var(--shadow);max-width:min(92vw,360px);
+  }
+  #remote-pop .code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:2rem;font-weight:800;
+    letter-spacing:.35em;color:var(--text);padding-left:.35em; /* balance letter-spacing */
+  }
+  #remote-qr{border-radius:10px;display:block}
+  #remote-pop .fine{text-align:center}
+
   /* ---------- screen 4: timer (mockup: clock cards active/danger + action bar) ---------- */
   #screen-timer{height:100dvh;overflow:hidden;user-select:none;-webkit-user-select:none}
   #screen-timer .topbar{padding:4px 6px 0}
@@ -1054,6 +1081,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+              <div class="cl-item"><span class="chip">PR55</span><span>Control the timer from your phone — scan the QR on the timer screen</span></div>
               <div class="cl-item"><span class="chip">PR52</span><span>Long tables now paginate 10 per page — match history, Ranks, admin players &amp; audit</span></div>
               <div class="cl-item"><span class="chip">PR51</span><span>New tier badges: Ascendant · Unreal · Champion top the board; 8-Ball Elite is now Elite</span></div>
               <div class="cl-item"><span class="chip">PR50</span><span>Ranks podium now reads 2nd — 1st — 3rd, Olympic-style</span></div>
@@ -1233,6 +1261,7 @@
       <span id="timer-mode-badge" class="badge">TIMER</span>
       <span id="timer-hints" class="hints"></span>
       <span class="spacer"></span>
+      <button id="remote-chip" type="button" hidden title="Phone remote control"><span class="rdot"></span><span id="remote-chip-text">remote</span></button>
       <button id="btn-pause" class="btn ghost tiny" type="button">⏸ Pause</button>
       <button id="btn-reset" class="btn ghost tiny" type="button">↺ Reset</button>
       <button id="btn-exit" class="btn ghost tiny" type="button">✕ Exit</button>
@@ -1263,6 +1292,17 @@
       <button id="btn-shot-reset" class="btn" type="button"><span class="bl">RESET SHOT</span><kbd>ENTER</kbd></button>
       <button id="btn-ext" class="btn btn-ext shot-only" type="button" hidden><span class="bl">+30s EXTENSION</span><kbd>E</kbd></button>
       <button id="btn-new-rack" class="btn shot-only" type="button" hidden><span class="bl">NEW RACK</span><kbd>N</kbd></button>
+    </div>
+
+    <!-- phone remote pairing popover (T16) -->
+    <div id="remote-pop" hidden>
+      <div class="card">
+        <div class="badge soft">PHONE REMOTE</div>
+        <div class="code" id="remote-code">----</div>
+        <canvas id="remote-qr" width="10" height="10" aria-label="QR code to open the phone remote"></canvas>
+        <p class="fine">Scan with a phone camera, or open<br><span id="remote-url" style="color:var(--text)"></span></p>
+        <p class="fine" id="remote-status">connecting…</p>
+      </div>
     </div>
   </section>
 
@@ -1425,6 +1465,7 @@ function showScreen(name) {
     hideOverlay();
     hideBanner();
     pauseGlowClear();
+    RemoteHost.stop();
   }
   if (name === 'queue' || name === 'adminpage') Hub.start(); // adminpage rides the same 5s poll — its cards stay live
   else if (from === 'queue' || from === 'adminpage') Hub.stop();
@@ -1433,7 +1474,7 @@ function showScreen(name) {
   $$('.screen').forEach(s => s.classList.toggle('active', s.id === 'screen-' + name));
   if (name === 'config') renderConfig();
   else if (name === 'rules') renderRules();
-  else if (name === 'timer') { initMatch(); ScreenLock.request(); renderAll(); startLoop(); }
+  else if (name === 'timer') { initMatch(); ScreenLock.request(); renderAll(); startLoop(); RemoteHost.start(); }
 }
 
 /* ==================== screens 1/1b/1c: portal, mode select, queue ==================== */
@@ -3541,6 +3582,372 @@ function switchPaused(i) {
     }
   });
 });
+
+/* ==================== phone remote host (T16) ====================
+   The laptop stays the SINGLE SOURCE OF TRUTH: all clock math is local and the
+   keyboard always works. One WebSocket (to a TableRoom Durable Object) receives
+   phone button presses; we run them through the SAME handlers the keys use and
+   ACK with the resulting match state. Commands are idempotent: each carries a
+   monotonic seq per phone, and a ~20-seq ring buffer dedupes Wi-Fi retries. */
+const RemoteHost = (() => {
+  const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
+  const STALE_MS = 10_000; // generous vs phone clock skew; DO structurally drops anything older anyway
+  const chip = $('#remote-chip'), chipText = $('#remote-chip-text');
+  const pop = $('#remote-pop');
+
+  let code = sessionStorage.getItem('nyit-remote-room');
+  let key = sessionStorage.getItem('nyit-remote-key');
+  let ws = null, retryT = 0, backoff = 1000, stopped = true;
+  const dedupe = new Map(); // cid -> { set, arr } ring of the last ~20 seqs
+
+  const ACTIONS = {
+    pass: actionPass,
+    reset: actionResetShot,
+    pause: () => { if (match.running) actionPauseToggle(); },       // explicit, never toggles
+    resume: () => { if (match.started && !match.running) actionPauseToggle(); },
+    ext: actionExtension,
+    new_rack: actionNewRack,
+  };
+
+  function snapshot() {
+    return {
+      mode: app.mode, active: match.active, running: match.running, started: match.started,
+      over: match.over, winner: match.winner, violPause: match.violPause,
+      extLeft: [...match.extLeft], extLen: settings.ext[match.active],
+      names: [...settings.names],
+      secs: [Math.ceil(match.remaining[0] / 1000), Math.ceil(match.remaining[1] / 1000)],
+    };
+  }
+
+  function dispatch(action, seq, cid, ts) {
+    const stale = Date.now() - ts > STALE_MS;
+    let dup = false;
+    if (!stale) {
+      let r = dedupe.get(cid);
+      if (!r) { r = { set: new Set(), arr: [] }; dedupe.set(cid, r); }
+      if (r.set.has(seq)) dup = true; // retry of an executed command: ACK, never re-run
+      else {
+        r.set.add(seq); r.arr.push(seq);
+        if (r.arr.length > 20) r.set.delete(r.arr.shift());
+      }
+    }
+    if (!stale && !dup && ACTIONS[action]) { Sound.ensure(); ACTIONS[action](); }
+    return { stale, dup, state: snapshot() };
+  }
+
+  /* ---------- WS lifecycle ---------- */
+  function connect() {
+    if (stopped) return;
+    const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    try { ws = new WebSocket(proto + location.host + '/api/remote/ws?room=' + code); }
+    catch { schedule(); return; }
+    ui('connecting');
+    ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'HELLO', key })));
+    ws.addEventListener('message', ev => {
+      let m = null;
+      try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.type === 'READY') { backoff = 1000; ui('live'); }
+      else if (m.type === 'CMD') {
+        const r = dispatch(m.action, m.seq, m.cid, m.ts);
+        send({ type: 'ACK', cid: m.cid, seq: m.seq, stale: r.stale, dup: r.dup, state: r.state });
+      }
+    });
+    ws.addEventListener('close', ev => {
+      ws = null;
+      if (ev.code === 4002) { // another laptop tab took over the room
+        stopped = true;
+        ui('replaced');
+        return;
+      }
+      if (!stopped) schedule(); // exp backoff; same room+key reclaims host role
+    });
+    ws.addEventListener('error', () => {}); // close event follows
+  }
+  function schedule() {
+    ui('offline');
+    clearTimeout(retryT);
+    retryT = setTimeout(connect, backoff);
+    backoff = Math.min(backoff * 2, 15000);
+  }
+  function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+  /* ---------- UI: topbar chip + pairing popover ---------- */
+  function ui(state) {
+    chip.classList.toggle('live', state === 'live');
+    chip.classList.toggle('err', state === 'replaced');
+    chipText.textContent = state === 'live' ? '📱 ' + code
+      : state === 'connecting' ? 'remote …'
+      : state === 'replaced' ? 'remote taken by another tab'
+      : 'remote reconnecting';
+    chip.title = state === 'live' ? 'Phone remote connected — click for the pairing code'
+      : 'Phone remote — click for the pairing code';
+    const s = $('#remote-status');
+    if (s) s.textContent = state === 'live' ? '✓ phone can connect — room open'
+      : state === 'replaced' ? 'another tab took over this room'
+      : state === 'connecting' ? 'connecting…' : 'reconnecting…';
+  }
+
+  function renderPop() {
+    $('#remote-code').textContent = code;
+    const url = location.origin + '/remote?room=' + code;
+    $('#remote-url').textContent = url;
+    const qr = makeQr(url);
+    const scale = 6, quiet = 4, n = qr.size + quiet * 2;
+    const c = $('#remote-qr');
+    c.width = c.height = n * scale;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = '#0b0f14';
+    for (let y = 0; y < qr.size; y++) for (let x = 0; x < qr.size; x++) {
+      if (qr.get(x, y)) g.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale);
+    }
+  }
+  function togglePop() {
+    if (pop.hidden) { renderPop(); pop.hidden = false; }
+    else pop.hidden = true;
+  }
+  chip.addEventListener('click', togglePop);
+  pop.addEventListener('click', e => { if (e.target === pop) pop.hidden = true; });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !pop.hidden) pop.hidden = true; });
+
+  /* ---------- start/stop (timer screen enter/leave) ---------- */
+  function start() {
+    if (!/^[A-HJ-NP-Z2-9]{4}$/.test(code || '')) {
+      code = [...crypto.getRandomValues(new Uint8Array(4))].map(b => ROOM_ALPHABET[b % 32]).join('');
+      sessionStorage.setItem('nyit-remote-room', code);
+    }
+    if (!key) {
+      key = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      sessionStorage.setItem('nyit-remote-key', key);
+    }
+    stopped = false;
+    chip.hidden = false;
+    connect();
+  }
+  function stop() {
+    stopped = true;
+    clearTimeout(retryT);
+    pop.hidden = true;
+    if (ws) { try { ws.close(1000); } catch {} ws = null; }
+    chip.hidden = true;
+  }
+  return { start, stop };
+})();
+
+/* ==================== minimal QR encoder ====================
+   Port of "qrcodegen" by Project Nayuki (MIT License), trimmed for this app:
+   byte mode only, ECC level M, versions 1-6 (<=106 bytes) — our room URLs are
+   ~40-60 chars. Verified module-for-module against qrcode-generator 1.4.4. */
+const makeQr = (() => {
+  const TOTAL_CW = [26, 44, 70, 100, 134, 172];  // total codewords per version
+  const ECC_CW   = [10, 16, 26, 18, 24, 16];     // ecc codewords per block
+  const BLOCKS   = [1, 1, 1, 2, 2, 4];           // equal-size data blocks
+  const ALIGN    = [[], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34]];
+  const getBit = (x, i) => ((x >>> i) & 1) !== 0;
+
+  function rsMul(x, y) {
+    let z = 0;
+    for (let i = 7; i >= 0; i--) {
+      z = (z << 1) ^ ((z >>> 7) * 0x11d);
+      z ^= ((y >>> i) & 1) * x;
+    }
+    return z & 0xff;
+  }
+  function rsDivisor(degree) {
+    const result = new Array(degree).fill(0);
+    result[degree - 1] = 1;
+    let root = 1;
+    for (let i = 0; i < degree; i++) {
+      for (let j = 0; j < degree; j++) {
+        result[j] = rsMul(result[j], root);
+        if (j + 1 < degree) result[j] ^= result[j + 1];
+      }
+      root = rsMul(root, 0x02);
+    }
+    return result;
+  }
+  function rsRemainder(data, divisor) {
+    const result = new Array(divisor.length).fill(0);
+    for (const b of data) {
+      const factor = b ^ result.shift();
+      result.push(0);
+      divisor.forEach((coef, i) => { result[i] ^= rsMul(coef, factor); });
+    }
+    return result;
+  }
+
+  return function makeQr(text) {
+    const bytes = new TextEncoder().encode(text);
+    const cap = v => Math.floor(((TOTAL_CW[v - 1] - ECC_CW[v - 1] * BLOCKS[v - 1]) * 8 - 12) / 8);
+    let version = 0;
+    for (let v = 1; v <= 6; v++) if (bytes.length <= cap(v)) { version = v; break; }
+    if (!version) throw new Error('QR payload too long');
+
+    /* bit stream: byte mode 0100, 8-bit count, data, terminator, pad */
+    const dataCw = TOTAL_CW[version - 1] - ECC_CW[version - 1] * BLOCKS[version - 1];
+    const bits = [];
+    const push = (val, n) => { for (let i = n - 1; i >= 0; i--) bits.push((val >>> i) & 1); };
+    push(0b0100, 4);
+    push(bytes.length, 8);
+    for (const b of bytes) push(b, 8);
+    push(0, Math.min(4, dataCw * 8 - bits.length));
+    while (bits.length % 8) bits.push(0);
+    const codewords = [];
+    for (let i = 0; i < bits.length; i += 8) {
+      let b = 0;
+      for (let j = 0; j < 8; j++) b = (b << 1) | bits[i + j];
+      codewords.push(b);
+    }
+    for (let pad = 0xec; codewords.length < dataCw; pad ^= 0xfd) codewords.push(pad);
+
+    /* error correction + interleave */
+    const n = BLOCKS[version - 1], blockLen = dataCw / n, div = rsDivisor(ECC_CW[version - 1]);
+    const dataBlocks = [], eccBlocks = [];
+    for (let i = 0; i < n; i++) {
+      const block = codewords.slice(i * blockLen, (i + 1) * blockLen);
+      dataBlocks.push(block);
+      eccBlocks.push(rsRemainder(block, div));
+    }
+    const seq = [];
+    for (let i = 0; i < blockLen; i++) for (const b of dataBlocks) seq.push(b[i]);
+    for (let i = 0; i < ECC_CW[version - 1]; i++) for (const b of eccBlocks) seq.push(b[i]);
+
+    /* matrix scaffolding */
+    const size = version * 4 + 17;
+    const modules = Array.from({ length: size }, () => new Array(size).fill(false));
+    const isFn = Array.from({ length: size }, () => new Array(size).fill(false));
+    const setFn = (x, y, dark) => { modules[y][x] = dark; isFn[y][x] = true; };
+
+    for (let i = 0; i < size; i++) { setFn(6, i, i % 2 === 0); setFn(i, 6, i % 2 === 0); }
+    const finder = (cx, cy) => {
+      for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+        const dist = Math.max(Math.abs(dx), Math.abs(dy));
+        const x = cx + dx, y = cy + dy;
+        if (0 <= x && x < size && 0 <= y && y < size) setFn(x, y, dist !== 2 && dist !== 4);
+      }
+    };
+    finder(3, 3); finder(size - 4, 3); finder(3, size - 4);
+    const ap = ALIGN[version - 1];
+    for (let i = 0; i < ap.length; i++) for (let j = 0; j < ap.length; j++) {
+      if ((i === 0 && j === 0) || (i === 0 && j === ap.length - 1) || (i === ap.length - 1 && j === 0)) continue;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        setFn(ap[j] + dx, ap[i] + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+      }
+    }
+    const drawFormat = mask => { // 15 bits = (ECL M<<3 | mask) BCH(15,5), xor mask 0x5412
+      const data = mask;
+      let rem = data;
+      for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+      const fb = (data << 10 | rem) ^ 0x5412;
+      for (let i = 0; i <= 5; i++) setFn(8, i, getBit(fb, i));
+      setFn(8, 7, getBit(fb, 6));
+      setFn(8, 8, getBit(fb, 7));
+      setFn(7, 8, getBit(fb, 8));
+      for (let i = 9; i < 15; i++) setFn(14 - i, 8, getBit(fb, i));
+      for (let i = 0; i < 8; i++) setFn(size - 1 - i, 8, getBit(fb, i));
+      for (let i = 8; i < 15; i++) setFn(8, size - 15 + i, getBit(fb, i));
+      setFn(8, size - 8, true); // always-dark module
+    };
+    drawFormat(0);
+
+    /* data placement: right-to-left zigzag skipping function modules */
+    let bi = 0;
+    for (let right = size - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (let vert = 0; vert < size; vert++) {
+        for (let j = 0; j < 2; j++) {
+          const x = right - j;
+          const upward = ((right + 1) & 2) === 0;
+          const y = upward ? size - 1 - vert : vert;
+          if (!isFn[y][x] && bi < seq.length * 8) {
+            modules[y][x] = getBit(seq[bi >>> 3], 7 - (bi & 7));
+            bi++;
+          }
+        }
+      }
+    }
+
+    /* mask selection: penalty score, lowest wins */
+    const maskFn = [
+      (x, y) => (x + y) % 2 === 0,
+      (x, y) => y % 2 === 0,
+      x => x % 3 === 0,
+      (x, y) => (x + y) % 3 === 0,
+      (x, y) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0,
+      (x, y) => (x * y) % 2 + (x * y) % 3 === 0,
+      (x, y) => ((x * y) % 2 + (x * y) % 3) % 2 === 0,
+      (x, y) => ((x + y) % 2 + (x * y) % 3) % 2 === 0,
+    ];
+    const applyMask = mask => {
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+        if (!isFn[y][x] && maskFn[mask](x, y)) modules[y][x] = !modules[y][x];
+      }
+      drawFormat(mask);
+    };
+    const penalty = () => {
+      let result = 0, dark = 0;
+      for (let y = 0; y < size; y++) { // N1: runs >= 5 in rows
+        let run = 1;
+        for (let x = 1; x < size; x++) {
+          if (modules[y][x] === modules[y][x - 1]) { run++; if (run === 5) result += 3; else if (run > 5) result++; }
+          else run = 1;
+        }
+      }
+      for (let x = 0; x < size; x++) { // N1: columns
+        let run = 1;
+        for (let y = 1; y < size; y++) {
+          if (modules[y][x] === modules[y - 1][x]) { run++; if (run === 5) result += 3; else if (run > 5) result++; }
+          else run = 1;
+        }
+      }
+      for (let y = 0; y < size - 1; y++) for (let x = 0; x < size - 1; x++) { // N2: 2x2 blocks
+        const c = modules[y][x];
+        if (c === modules[y][x + 1] && c === modules[y + 1][x] && c === modules[y + 1][x + 1]) result += 3;
+      }
+      const pat = [true, false, true, true, true, false, true]; // N3: finder-like 1:1:3:1:1
+      const sideLight = (get, i, lead) => {
+        const base = lead ? i - 4 : i + 7;
+        for (let k = 0; k < 4; k++) {
+          const p = base + k;
+          if (p < 0 || p >= size || get(p)) return false;
+        }
+        return true;
+      };
+      for (let y = 0; y < size; y++) {
+        const g = x => modules[y][x];
+        for (let x = 0; x + 7 <= size; x++) {
+          let ok = true;
+          for (let k = 0; k < 7; k++) if (g(x + k) !== pat[k]) { ok = false; break; }
+          if (ok && (sideLight(g, x, false) || sideLight(g, x, true))) result += 40;
+        }
+      }
+      for (let x = 0; x < size; x++) {
+        const g = y => modules[y][x];
+        for (let y = 0; y + 7 <= size; y++) {
+          let ok = true;
+          for (let k = 0; k < 7; k++) if (g(y + k) !== pat[k]) { ok = false; break; }
+          if (ok && (sideLight(g, y, false) || sideLight(g, y, true))) result += 40;
+        }
+      }
+      for (const row of modules) for (const m of row) if (m) dark++; // N4: dark balance
+      const total = size * size;
+      result += (Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1) * 10;
+      return result;
+    };
+    const saved = modules.map(r => r.slice());
+    let best = Infinity, bestMask = 0;
+    for (let mask = 0; mask < 8; mask++) {
+      applyMask(mask);
+      const p = penalty();
+      if (p < best) { best = p; bestMask = mask; }
+      for (let y = 0; y < size; y++) modules[y].splice(0, size, ...saved[y]);
+    }
+    applyMask(bestMask);
+    return { size, get: (x, y) => modules[y][x] };
+  };
+})();
 
 /* ==================== rendering ==================== */
 function fmtTime(ms) {

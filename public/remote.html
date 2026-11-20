@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#080c10">
+<title>BearBreak — Timer Remote</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<style>
+  :root{
+    --bg:#080c10; --panel:#101a22; --panel2:#0c141b; --line:#1c2b37; --line2:#27394a;
+    --text:#edf4f9; --muted:#8aa0b4; --felt:#31a06d; --felt2:#1d7a52; --feltink:#04160e;
+    --t1:#3db4f0; --t2:#f59d4b; --danger:#ee6070; --warn:#e6b33f;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  [hidden]{display:none !important}
+  html,body{margin:0;padding:0;height:100%}
+  body{
+    background:radial-gradient(900px 480px at 50% -140px,#122029 0%,transparent 70%),var(--bg);
+    color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI Variable","Segoe UI",Roboto,Arial,sans-serif;
+    display:flex;flex-direction:column;min-height:100dvh;
+    overscroll-behavior:none;touch-action:manipulation;user-select:none;-webkit-user-select:none;
+  }
+  header{
+    display:flex;align-items:center;gap:10px;padding:14px 16px 10px;
+    border-bottom:1px solid var(--line);
+  }
+  header .logo{font-weight:800;letter-spacing:.02em}
+  header .room{
+    margin-left:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;
+    border:1px solid var(--line2);border-radius:999px;padding:5px 12px;letter-spacing:.22em;
+  }
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none;transition:background .2s}
+  .dot.on{background:#3ed598;box-shadow:0 0 8px #3ed59888}
+  .dot.off{background:var(--danger)}
+
+  main{flex:1;display:flex;flex-direction:column;gap:12px;padding:16px 16px calc(16px + env(safe-area-inset-bottom));max-width:480px;width:100%;margin:0 auto}
+
+  #stateline{
+    border:1px solid var(--line);border-radius:13px;background:var(--panel2);
+    padding:10px 14px;font-size:.9rem;color:var(--muted);min-height:42px;
+    display:flex;align-items:center;gap:8px;
+  }
+  #stateline b{color:var(--text)}
+
+  button{
+    font:inherit;color:inherit;cursor:pointer;background:none;border:none;
+    border-radius:14px;touch-action:manipulation;
+  }
+  .big{
+    background:linear-gradient(180deg,var(--felt),var(--felt2));color:var(--feltink);font-weight:800;
+    min-height:96px;font-size:1.45rem;letter-spacing:.05em;
+    box-shadow:0 10px 26px -12px var(--felt);transition:filter .12s,transform .05s;
+  }
+  .big:active{transform:scale(.985)}
+  .big:disabled{filter:grayscale(.6) brightness(.6);box-shadow:none;cursor:default}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .cell{
+    background:var(--panel);border:1px solid var(--line2);min-height:72px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+    font-weight:700;font-size:1rem;transition:border-color .12s,transform .05s;
+  }
+  .cell:active{transform:scale(.985)}
+  .cell:disabled{opacity:.35;cursor:default}
+  .cell small{font-weight:500;color:var(--muted);font-size:.72rem;letter-spacing:.05em}
+  .flash-ok{border-color:var(--felt)!important;box-shadow:0 0 0 3px #31a06d44 inset}
+  .flash-bad{border-color:var(--danger)!important;box-shadow:0 0 0 3px #ee607044 inset}
+
+  #msg{min-height:20px;font-size:.85rem;color:var(--muted);text-align:center}
+  #msg.bad{color:var(--danger)}
+
+  /* pairing card when no ?room= */
+  #pair{display:flex;flex-direction:column;gap:12px;align-items:center;margin:auto 0;padding:12px}
+  #pair input{
+    font:inherit;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:1.6rem;font-weight:700;
+    letter-spacing:.4em;text-transform:uppercase;text-align:center;color:var(--text);
+    background:var(--panel2);border:1px solid var(--line2);border-radius:13px;padding:14px;width:100%;
+    outline:none;
+  }
+  #pair input:focus{border-color:var(--felt)}
+  #pair .go{
+    background:linear-gradient(180deg,var(--felt),var(--felt2));color:var(--feltink);
+    font-weight:800;padding:14px 22px;width:100%;
+  }
+  .fine{color:var(--muted);font-size:.85rem;line-height:1.5;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <span class="logo">🎱 Timer remote</span>
+  <span class="room" id="room-chip" hidden></span>
+</header>
+
+<main>
+  <section id="pair" hidden>
+    <p class="fine">Enter the 4-letter code shown on the laptop timer screen.</p>
+    <input id="pair-input" maxlength="4" inputmode="latin" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="AB2C" aria-label="Room code">
+    <button class="go" id="pair-go" type="button">Connect</button>
+    <p class="fine" id="pair-err"></p>
+  </section>
+
+  <section id="ctrl" hidden style="display:flex;flex-direction:column;gap:12px">
+    <div id="stateline">checking the laptop…</div>
+    <button class="big" id="b-pass" type="button">START</button>
+    <div class="row">
+      <button class="cell" id="b-reset" type="button">RESET SHOT</button>
+      <button class="cell" id="b-pause" type="button">PAUSE<small>clock running</small></button>
+    </div>
+    <div class="row">
+      <button class="cell" id="b-resume" type="button">RESUME<small>clock paused</small></button>
+      <button class="cell" id="b-ext" type="button">+EXT<small>extension</small></button>
+    </div>
+    <div class="row">
+      <button class="cell" id="b-rack" type="button">NEW RACK<small>restore extensions</small></button>
+    </div>
+    <div id="msg"></div>
+  </section>
+</main>
+
+<script>
+'use strict';
+/* Phone remote controller — the laptop timer stays the single source of truth;
+   this page only POSTs explicit button presses and renders the ACKed state.
+   Commands carry a monotonic seq (per controller id): retries reuse the same seq
+   so a spotty-Wi-Fi resend can never double-fire on the laptop. */
+const ROOM_RE = /^[A-HJ-NP-Z2-9]{4}$/;
+const $ = s => document.querySelector(s);
+
+let room = null;
+let seq = 0;
+let cid = sessionStorage.getItem('nyit-remote-cid');
+if (!cid) { cid = Math.random().toString(16).slice(2, 10); sessionStorage.setItem('nyit-remote-cid', cid); }
+
+function setDot(state) { // 'on' | 'off' | ''
+  const d = $('#dot');
+  d.className = 'dot' + (state ? ' ' + state : '');
+}
+function flash(btn, cls) {
+  btn.classList.remove('flash-ok', 'flash-bad');
+  void btn.offsetWidth;
+  btn.classList.add(cls);
+  setTimeout(() => btn.classList.remove(cls), 450);
+}
+function buzz(ms) { if (navigator.vibrate) navigator.vibrate(ms); }
+
+/* state from the laptop's ACK drives labels + disabled flags */
+function applyState(s) {
+  if (!s) return;
+  const shot = s.mode === 'shot';
+  const pass = $('#b-pass');
+  pass.textContent = !s.started ? 'START' : s.over ? 'MATCH OVER' : 'PASS TURN';
+  pass.disabled = s.over;
+  $('#b-reset').disabled = s.over || !s.started;
+  $('#b-pause').disabled = s.over || !s.started || !s.running;
+  $('#b-resume').disabled = s.over || !s.started || s.running;
+  $('#b-ext').disabled = !shot || s.over || !s.started || (s.extLeft && s.extLeft[s.active] <= 0);
+  $('#b-rack').disabled = !shot || s.over || !s.started;
+  const names = s.names || ['Team 1', 'Team 2'];
+  const line = s.over
+    ? `🏁 ${names[s.winner ?? 0]} wins`
+    : s.started
+      ? `${names[s.active] ?? '?'} ${s.running ? 'on clock' : 'paused'} · ${s.secs ? Math.max(0, s.secs[s.active]) : '?'}s`
+      : `${names[s.active] ?? '?'} to break`;
+  $('#stateline').innerHTML = s.started && !s.over
+    ? `<b>${line}</b>` + (s.violPause ? ' · <span style="color:var(--warn)">BALL IN HAND</span>' : '')
+    : `<b>${line}</b>`;
+}
+
+async function status() {
+  try {
+    const r = await fetch('/api/remote/status?room=' + room);
+    const d = await r.json();
+    setDot(d.host ? 'on' : 'off');
+    $('#stateline').textContent = d.host
+      ? 'laptop connected — buttons are live'
+      : (d.room ? 'laptop offline (timer screen closed?)' : 'unknown room');
+    return d;
+  } catch { setDot('off'); return { host: false }; }
+}
+
+async function press(action, btn) {
+  if (!room) return;
+  const body = { action, seq: ++seq, ts: Date.now(), cid };
+  const send = () => fetch('/api/remote/cmd?room=' + room, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json());
+  try {
+    let d;
+    try { d = await send(); }
+    catch { d = await send(); } // network blip: SAME seq retries — laptop dedupes
+    if (d.ok) {
+      flash(btn, 'flash-ok');
+      buzz(30);
+      setDot('on');
+      applyState(d.state);
+      $('#msg').textContent = '';
+      $('#msg').className = '';
+    } else if (d.stale) {
+      flash(btn, 'flash-bad');
+      buzz(80);
+      $('#msg').textContent = 'too slow — command expired (laptop may have reconnected late)';
+      $('#msg').className = 'bad';
+    } else {
+      flash(btn, 'flash-bad');
+      buzz(80);
+      setDot('off');
+      $('#msg').textContent = d.error || 'command failed';
+      $('#msg').className = 'bad';
+    }
+  } catch {
+    flash(btn, 'flash-bad');
+    buzz(80);
+    setDot('off');
+    $('#msg').textContent = 'network error';
+    $('#msg').className = 'bad';
+  }
+}
+
+$('#b-pass').addEventListener('click', e => press('pass', e.currentTarget));
+$('#b-reset').addEventListener('click', e => press('reset', e.currentTarget));
+$('#b-pause').addEventListener('click', e => press('pause', e.currentTarget));
+$('#b-resume').addEventListener('click', e => press('resume', e.currentTarget));
+$('#b-ext').addEventListener('click', e => press('ext', e.currentTarget));
+$('#b-rack').addEventListener('click', e => press('new_rack', e.currentTarget));
+
+function enter(r) {
+  room = r;
+  $('#pair').hidden = true;
+  $('#ctrl').hidden = false;
+  $('#room-chip').hidden = false;
+  $('#room-chip').textContent = r;
+  history.replaceState(null, '', '/remote?room=' + r);
+  status();
+}
+{
+  const q = new URLSearchParams(location.search).get('room') || '';
+  if (ROOM_RE.test(q)) enter(q);
+  else {
+    $('#pair').hidden = false;
+    $('#pair-go').addEventListener('click', () => {
+      const v = $('#pair-input').value.trim().toUpperCase();
+      if (!ROOM_RE.test(v)) { $('#pair-err').textContent = '4 letters/digits — no 0, 1, O or I'; return; }
+      enter(v);
+    });
+  }
+}
+/* periodic laptop-online check (cheap DO touch, no D1) */
+setInterval(() => { if (room) status(); }, 15000);
+</script>
+</body>
+</html>
