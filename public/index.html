@@ -281,11 +281,10 @@
     background:linear-gradient(180deg,color-mix(in srgb,var(--ok) 10%,transparent),transparent 72%),var(--panel);
     display:flex;flex-direction:column;gap:10px;
   }
-  .vsrow{display:flex;align-items:stretch;gap:6px}
-  /* two parties up: hard 3-track grid (party | VS | party) so one side can
-     never squeeze the other — minmax(0,1fr) hardening (PR #26 lesson) */
-  .vsrow.two{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:stretch}
-  .pgraph{flex:1;display:flex;flex-direction:column;gap:6px;min-width:0}
+  .vsrow{display:flex;flex-direction:column;gap:6px}
+  /* table card = ONE full-width column (1xN): team rows, VS divider row, other
+     team — full-width rows keep long nicknames readable, no half-columns */
+  .pgraph{display:flex;flex-direction:column;gap:6px;min-width:0}
   .pman{
     display:flex;align-items:center;gap:7px;background:var(--panel2);
     border:1px solid var(--line);border-radius:var(--r-md);padding:7px 9px;min-width:0;
@@ -295,11 +294,20 @@
     font-weight:900;font-size:.74rem;color:var(--feltink);background:var(--felt);
   }
   .pman.g .av{background:#41576b;color:#dfe9f1}
-  .pman .nm{flex:1;min-width:0}
-  .pman .nm b{display:block;font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .pman .nm small{color:var(--muted);font-size:.68rem;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .pman .nm small .elo{color:var(--felt);font-weight:800}
-  .vstag{align-self:center;font-weight:900;color:var(--faint);font-size:.72rem}
+  .pman .nm{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+  .pman .nm .l1,.pman .nm .l2{
+    display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;
+  }
+  .pman .nm b{font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pman .nm small{color:var(--muted);font-size:.68rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pman .nm .elo{font-weight:800;color:var(--felt);font-size:.78rem;font-variant-numeric:tabular-nums}
+  .pman.g .nm .elo{color:var(--muted)}
+  .pman .nm .tier{flex-shrink:0}
+  .vstag{
+    display:flex;align-items:center;gap:8px;margin:2px 0;
+    font-weight:900;font-size:.7rem;letter-spacing:.14em;color:var(--faint);
+  }
+  .vstag::before,.vstag::after{content:'';flex:1;height:1px;background:var(--line)}
   .qrow{
     display:flex;align-items:center;gap:11px;background:var(--panel);
     border:1px solid var(--line);border-radius:var(--r-lg);padding:11px 13px;
@@ -1085,7 +1093,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
-              <div class="cl-item"><span class="chip">PR57</span><span>Table card: the two teams now sit side-by-side in fixed halves — nicknames stay readable on phones</span></div>
+              <div class="cl-item"><span class="chip">PR58</span><span>Table card rework: full-width player cards — nickname + rank over @username + rating — stacked with a VS divider between teams</span></div>
               <div class="cl-item"><span class="chip">PR56</span><span>Admins now see a pending-match count on the lock button and the admin page</span></div>
               <div class="cl-item"><span class="chip">PR55</span><span>Control the timer from your phone — scan the QR on the timer screen</span></div>
               <div class="cl-item"><span class="chip">PR52</span><span>Long tables now paginate 10 per page — match history, Ranks, admin players &amp; audit</span></div>
@@ -1906,21 +1914,28 @@ const Hub = (() => {
     if (qMode.mode === 'duo-only' && wantSolo) $('#join-format [data-v="duo"]').click();
   }
 
-  /* mockup player row: avatar pip (green=registered, grey=guest) + name, with
-     @user · elo moved under the name — keeps the name wide in the table card's
-     half-column instead of competing with it on one line */
+  /* table-card player card: avatar pip (green=registered, grey=guest) + two
+     lines — nickname + rank badge over @username + rating (rank from the shared
+     60s leaderboard cache, same tier() the Ranks tab uses) */
   function pman(p) {
     const m = el('div', 'pman' + (p.registered ? '' : ' g'));
     m.append(el('span', 'av', (p.name || '?').trim().charAt(0).toUpperCase()));
     const nm = el('span', 'nm');
-    nm.append(el('b', null, p.name));
+    const l1 = el('span', 'l1');
+    l1.append(el('b', null, p.name));
+    const l2 = el('span', 'l2');
     if (p.registered) {
-      const sub = el('small', null, '@' + p.username);
-      if (p.elo != null) sub.append(el('span', 'elo', ' · ' + p.elo));
-      nm.append(sub);
+      const row = boardRows.find(u => u.id === p.id);
+      if (row) {
+        const t = tier(boardRows.indexOf(row), p.elo, row.ranked_wins + row.ranked_losses);
+        l1.append(el('span', 'tier' + (t === 'Placement' ? ' grey' : tierCls(t)), t));
+      }
+      l2.append(el('small', null, '@' + p.username));
+      if (p.elo != null) l2.append(el('span', 'elo', String(p.elo)));
     } else {
-      nm.append(el('small', null, 'guest'));
+      l2.append(el('small', null, 'guest'));
     }
+    nm.append(l1, l2);
     m.append(nm);
     return m;
   }
@@ -2161,11 +2176,12 @@ const Hub = (() => {
     pop.classList.add('show');
   }
 
-  function renderQueue() {
+  async function renderQueue() {
     renderHours();
     renderTeamupPop();
     renderInvitePop();
     renderPartnerPop();
+    await ensureBoard(); // rank badges on the table card need the leaderboard
     const playing = parties ? parties.filter(p => p.status === 'playing') : [];
     const waiting = parties ? parties.filter(p => p.status === 'waiting') : [];
     const nowBox = $('#hub-playing');
@@ -2183,7 +2199,7 @@ const Hub = (() => {
       head.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap';
       head.append(el('span', 'chip ok', playing.length === 2 ? 'ON THE TABLE' : 'HOLDING THE TABLE'));
       head.append(el('span', 'fine', 'winner stays · challenger next'));
-      const vsrow = el('div', 'vsrow' + (playing[1] ? ' two' : ''));
+      const vsrow = el('div', 'vsrow');
       const grp = p => {
         const g = el('div', 'pgraph');
         if (p.p1) g.append(pman(p.p1));
@@ -2525,6 +2541,7 @@ const Hub = (() => {
   const BOARD_PER_PAGE = 10;
   let boardPage = 1;
   let boardRows = [];
+  let boardFetchedAt = 0;
 
   function renderBoardPage() {
     const podium = $('#board-podium');
@@ -2581,8 +2598,17 @@ const Hub = (() => {
     if (tab !== 'board') return;
     try {
       boardRows = (await api('/leaderboard')).leaderboard;
+      boardFetchedAt = Date.now();
       renderBoardPage();
     } catch { /* keep old render */ }
+  }
+
+  /* table-card rank badges read the leaderboard too — one shared 60s cache with
+     the Ranks tab, so the queue tab costs at most one users-scan per minute */
+  async function ensureBoard() {
+    if (Date.now() - boardFetchedAt < 60000) return;
+    boardFetchedAt = Date.now();
+    try { boardRows = (await api('/leaderboard')).leaderboard; } catch { /* stale ok */ }
   }
 
   /* ---------- drawer: account + my confirmations ---------- */
