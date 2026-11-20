@@ -494,6 +494,8 @@
     display:grid;place-items:center;padding:0 4px;
   }
   .hub-bell{position:relative}
+  /* same count chip, inline in the admin page's pending section header */
+  .adm-n{position:static;display:inline-grid;margin-left:8px;vertical-align:2px}
   .upick{
     position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:30;
     background:var(--panel3);border:1px solid var(--line2);border-radius:12px;
@@ -942,7 +944,7 @@
         <button id="hub-user" class="hub-user btn-ghost" type="button" hidden style="border-radius:999px"></button>
         <button id="hub-admin-chip" class="hub-adminchip" type="button" hidden>ADMIN</button>
         <button id="hub-bell" class="btn ghost tiny hub-bell" type="button" hidden title="Account &amp; notifications">👤<span id="hub-bell-n" class="bell-n" hidden></span></button>
-        <button id="hub-admin-btn" class="btn ghost tiny" type="button" title="Admin unlock">🔒</button>
+        <button id="hub-admin-btn" class="btn ghost tiny hub-bell" type="button" title="Admin unlock"><span id="hub-admin-ico">🔒</span><span id="hub-admin-n" class="bell-n" hidden></span></button>
       </div>
       <div id="queue-hours" class="hours" hidden></div>
 
@@ -1081,6 +1083,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+              <div class="cl-item"><span class="chip">PR56</span><span>Admins now see a pending-match count on the lock button and the admin page</span></div>
               <div class="cl-item"><span class="chip">PR55</span><span>Control the timer from your phone — scan the QR on the timer screen</span></div>
               <div class="cl-item"><span class="chip">PR52</span><span>Long tables now paginate 10 per page — match history, Ranks, admin players &amp; audit</span></div>
               <div class="cl-item"><span class="chip">PR51</span><span>New tier badges: Ascendant · Unreal · Champion top the board; 8-Ball Elite is now Elite</span></div>
@@ -1191,7 +1194,7 @@
       <button id="adm-add-party" class="btn ghost tiny" type="button" style="align-self:flex-start;border-style:dashed">+ Add blank party slot</button>
       <div id="adm-parties" style="display:flex;flex-direction:column;gap:10px"></div>
 
-      <div class="sec-h">Pending &amp; disputed matches</div>
+      <div class="sec-h">Pending &amp; disputed matches<span id="adm-pend-n" class="bell-n adm-n" hidden></span></div>
       <div id="adm-pending"></div>
 
       <div class="sec-h">Players</div>
@@ -1667,23 +1670,25 @@ const Hub = (() => {
 
   $('#a-signout').addEventListener('click', () => {
     token = null; me = null; adminPin = null;
+    setAdminPend(0);
     localStorage.removeItem(TOKEN_KEY);
     $('#hub-gate').hidden = false;
     $('#hub-main').hidden = true;
     $('#hub-user').hidden = true;
     $('#hub-bell').hidden = true;
     $('#hub-admin-chip').hidden = true;
-    $('#hub-admin-btn').textContent = '🔒';
+    $('#hub-admin-ico').textContent = '🔒';
     switchTab('queue');
   });
   function setAdminUI(unlocked) {
-    $('#hub-admin-btn').textContent = unlocked ? '🔓' : '🔒';
+    $('#hub-admin-ico').textContent = unlocked ? '🔓' : '🔒'; // chip span must survive
     $('#hub-admin-chip').hidden = !unlocked;
   }
   $('#hub-admin-btn').addEventListener('click', async () => {
     if (adminPin) { // tap again to lock
       adminPin = null;
       setAdminUI(false);
+      setAdminPend(0);
       if (tab === 'me') refreshDrawer();
       return;
     }
@@ -1691,13 +1696,14 @@ const Hub = (() => {
     if (pin === null || pin === '') return;
     adminPin = pin;
     try {
-      const { admin_unlocked } = await api('/notifications');
+      const { admin, admin_unlocked } = await api('/notifications');
       if (!admin_unlocked) {
         adminPin = null;
         alert('Wrong admin PIN.');
         return;
       }
       setAdminUI(true);
+      setAdminPend((admin || []).length); // show the count now, not on the next 5s tick
       if (tab === 'me') refreshDrawer();
     } catch (ex) {
       adminPin = null;
@@ -2677,6 +2683,19 @@ const Hub = (() => {
     b.textContent = n > 9 ? '9+' : n;
   }
 
+  /* admin pending counter: header 🔒/🔓 chip + admin page section chip.
+     The light poll only returns the admin list while the pin is unlocked,
+     so both chips stay hidden until then. */
+  function setAdminPend(n) {
+    const show = adminPin && n > 0;
+    const b = $('#hub-admin-n');
+    b.hidden = !show;
+    b.textContent = n > 9 ? '9+' : n;
+    const s = $('#adm-pend-n');
+    s.hidden = !(adminPin && n);
+    s.textContent = n > 9 ? '9+' : n;
+  }
+
   /* ---------- admin page (queue controls, pending, players, audit) ---------- */
   const AdminPage = (() => {
     function fillTable(tableSel, headers, rows) {
@@ -2727,6 +2746,7 @@ const Hub = (() => {
       try {
         const { admin } = await api('/pending'); // full rosters for dispute rulings, fetched only with the page open
         const all = admin || [];
+        setAdminPend(all.length);
         if (!all.length) pend.append(el('div', 'fine', 'No pending or disputed matches.'));
         const mkCard = n => {
           const card = el('div', 'pend' + (n.status === 'disputed' ? ' disputed' : ''));
@@ -3023,8 +3043,9 @@ const Hub = (() => {
     }
     if (me.guest) return; // no account -> nothing to notify
     try {
-      const { notifications } = await api('/notifications');
+      const { notifications, admin, admin_unlocked } = await api('/notifications');
       setBell(notifications.length);
+      setAdminPend(admin_unlocked ? (admin || []).length : 0);
     } catch { /* offline */ }
   }
 
