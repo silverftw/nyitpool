@@ -11,6 +11,10 @@
  */
 
 import { rate, composite } from './glicko2.js';
+import { TableRoom } from './tableroom.js';
+
+// Durable Object class export (wrangler.jsonc: TABLE_ROOM -> TableRoom)
+export { TableRoom };
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -560,6 +564,50 @@ async function commitMatch(db, pending) {
 async function handleApi(request, env, url) {
   const { pathname } = url;
   const method = request.method;
+
+  /* ---------- timer remote control (T16): DO plumbing, zero D1 ----------
+     Laptop WS host + phone POSTs live inside one TableRoom DO per room code.
+     Room codes use the unambiguous alphabet (no 0/O/1/I): 4 chars. */
+  const ROOM_RE = /^[A-HJ-NP-Z2-9]{4}$/;
+  if (pathname === '/api/remote/ws' && method === 'GET') {
+    const room = url.searchParams.get('room') || '';
+    if (!ROOM_RE.test(room)) return bad('bad room code', 400);
+    if ((request.headers.get('upgrade') || '').toLowerCase() !== 'websocket') {
+      return bad('websocket required', 426);
+    }
+    const stub = env.TABLE_ROOM.get(env.TABLE_ROOM.idFromName('room:' + room));
+    return stub.fetch(request); // WS upgrade passes through to the DO
+  }
+  if (pathname === '/api/remote/cmd' && method === 'POST') {
+    const room = url.searchParams.get('room') || '';
+    if (!ROOM_RE.test(room)) return bad('bad room code', 400);
+    // sanity-check the body before waking the DO (unknown action / stale / bad seq die here)
+    const body = await request.json().catch(() => null);
+    const action = String(body?.action || '');
+    const seq = Number(body?.seq);
+    const ts = Number(body?.ts) || 0;
+    const cid = String(body?.cid || '');
+    if (!['pass', 'reset', 'pause', 'resume', 'ext', 'new_rack'].includes(action)) {
+      return bad('unknown action');
+    }
+    if (!Number.isInteger(seq) || seq <= 0) return bad('bad seq');
+    if (!/^[a-z0-9]{1,16}$/.test(cid)) return bad('bad cid');
+    // generous 10s window (phone clock skew); the DO drops anything without a
+    // live host socket anyway, so commands can never execute late
+    if (Date.now() - ts > 10000) return json({ ok: false, stale: true, error: 'command expired' });
+    const stub = env.TABLE_ROOM.get(env.TABLE_ROOM.idFromName('room:' + room));
+    return stub.fetch(new Request('https://tableroom/api/remote/cmd', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action, seq, ts, cid }),
+    }));
+  }
+  if (pathname === '/api/remote/status' && method === 'GET') {
+    const room = url.searchParams.get('room') || '';
+    if (!ROOM_RE.test(room)) return bad('bad room code', 400);
+    const stub = env.TABLE_ROOM.get(env.TABLE_ROOM.idFromName('room:' + room));
+    return stub.fetch(new Request('https://tableroom/api/remote/status'));
+  }
 
   if (pathname === '/api/health') {
     return json({ ok: true, time: new Date().toISOString() });
@@ -1661,6 +1709,9 @@ export default {
         return json({ error: 'internal error', detail: String(err?.message || err) }, 500);
       }
     }
+    // NOTE: /remote (the phone controller, QR target) is served straight from
+    // public/remote.html by the assets layer's pretty-URL handling — no worker
+    // code needed for it.
     return env.ASSETS.fetch(request);
   },
 };
