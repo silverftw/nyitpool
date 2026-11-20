@@ -518,8 +518,8 @@
     display:grid;place-items:center;padding:0 4px;
   }
   .hub-bell{position:relative}
-  /* same count chip, inline in the admin page's pending section header */
-  .adm-n{position:static;display:inline-grid;margin-left:8px;vertical-align:2px}
+  /* same count chip, inline (ADMIN tag + admin page's pending section header) */
+  .adm-n{position:static;display:inline-grid;margin-left:6px;vertical-align:1px}
   .upick{
     position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:30;
     background:var(--panel3);border:1px solid var(--line2);border-radius:12px;
@@ -966,9 +966,9 @@
         <h2>Table Queue</h2>
         <span class="spacer"></span>
         <button id="hub-user" class="hub-user btn-ghost" type="button" hidden style="border-radius:999px"></button>
-        <button id="hub-admin-chip" class="hub-adminchip" type="button" hidden>ADMIN</button>
+        <button id="hub-admin-chip" class="hub-adminchip hub-bell" type="button" hidden>ADMIN<span id="hub-admin-n" class="bell-n adm-n" hidden></span></button>
         <button id="hub-bell" class="btn ghost tiny hub-bell" type="button" hidden title="Account &amp; notifications">👤<span id="hub-bell-n" class="bell-n" hidden></span></button>
-        <button id="hub-admin-btn" class="btn ghost tiny hub-bell" type="button" title="Admin unlock"><span id="hub-admin-ico">🔒</span><span id="hub-admin-n" class="bell-n" hidden></span></button>
+        <button id="hub-admin-btn" class="btn ghost tiny" type="button" title="Admin unlock">🔒</button>
       </div>
       <div id="queue-hours" class="hours" hidden></div>
 
@@ -1703,11 +1703,11 @@ const Hub = (() => {
     $('#hub-user').hidden = true;
     $('#hub-bell').hidden = true;
     $('#hub-admin-chip').hidden = true;
-    $('#hub-admin-ico').textContent = '🔒';
+    $('#hub-admin-btn').textContent = '🔒';
     switchTab('queue');
   });
   function setAdminUI(unlocked) {
-    $('#hub-admin-ico').textContent = unlocked ? '🔓' : '🔒'; // chip span must survive
+    $('#hub-admin-btn').textContent = unlocked ? '🔓' : '🔒';
     $('#hub-admin-chip').hidden = !unlocked;
   }
   $('#hub-admin-btn').addEventListener('click', async () => {
