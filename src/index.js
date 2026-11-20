@@ -10,7 +10,7 @@
  *   SESSION_SECRET  — HMAC key for session tokens (falls back to ADMIN_PIN)
  */
 
-import { rate, composite } from './glicko2.js';
+import { rate, composite, expected } from './glicko2.js';
 import { TableRoom } from './tableroom.js';
 
 // Durable Object class export (wrangler.jsonc: TABLE_ROOM -> TableRoom)
@@ -217,8 +217,8 @@ const PARTY_SELECT = `
   SELECT p.id, p.format, p.status, p.position, p.created_at,
          p.created_by_user_id, p.p1_user_id, p.p1_guest_name, p.p2_user_id, p.p2_guest_name,
          p.stuck, p.pickup_open,
-         u1.nickname AS p1_nick, u1.username AS p1_user, u1.glicko_rating AS p1_elo,
-         u2.nickname AS p2_nick, u2.username AS p2_user, u2.glicko_rating AS p2_elo,
+         u1.nickname AS p1_nick, u1.username AS p1_user, u1.glicko_rating AS p1_elo, u1.glicko_rd AS p1_rd,
+         u2.nickname AS p2_nick, u2.username AS p2_user, u2.glicko_rating AS p2_elo, u2.glicko_rd AS p2_rd,
          (SELECT COUNT(*) FROM skip_votes v WHERE v.party_id = p.id) AS votes,
          pi.created_at AS invite_at, tu.nickname AS invite_nick, tu.username AS invite_user
   FROM queue_parties p
@@ -276,6 +276,28 @@ function shapeParty(row) {
     p1: mk(row.p1_user_id, row.p1_nick, row.p1_user, row.p1_elo, row.p1_guest_name),
     p2: mk(row.p2_user_id, row.p2_nick, row.p2_user, row.p2_elo, row.p2_guest_name),
   };
+}
+
+/* favored-side win probability for the two ON-THE-TABLE parties: Glicko-2 E
+   between composite teams (same avg-rating/avg-RD trick the rating engine uses).
+   Guests have no rating — a side with zero registered players hides the line. */
+function tableWinProb(rows) {
+  const playing = rows.filter(r => r.status === 'playing');
+  if (playing.length !== 2) return null;
+  const team = r => {
+    const t = [];
+    if (r.p1_user_id != null) t.push({ glicko_rating: r.p1_elo, glicko_rd: r.p1_rd });
+    if (r.p2_user_id != null) t.push({ glicko_rating: r.p2_elo, glicko_rd: r.p2_rd });
+    return t;
+  };
+  const t1 = team(playing[0]), t2 = team(playing[1]);
+  if (!t1.length || !t2.length) return null;
+  const e = expected(composite(t1), composite(t2));
+  const fav = e >= 0.5 ? playing[0] : playing[1];
+  // highest-elo REGISTERED player on the favored side names the team
+  const has1 = fav.p1_user_id != null, has2 = fav.p2_user_id != null;
+  const nickname = has2 && (!has1 || fav.p2_elo > fav.p1_elo) ? fav.p2_nick : fav.p1_nick;
+  return { nickname, pct: Math.round(Math.max(e, 1 - e) * 100) };
 }
 
 /* admin roster edits: resolve a slot spec ({user_id}|{guest_name}|null) to columns */
@@ -802,7 +824,8 @@ async function handleApi(request, env, url) {
         created_at: invRow.created_at, expires_at: invRow.created_at + TEAMUP_TTL_MS,
       };
     }
-    return json({ parties: results.map(shapeParty), mode: eff.mode, override: eff.override, schedule: eff.schedule,
+    return json({ parties: results.map(shapeParty), table_win_prob: tableWinProb(results),
+      mode: eff.mode, override: eff.override, schedule: eff.schedule,
       key_required: !!env.QUEUE_KEY, key_valid: await validQueueKey(request, env),
       key_ttl_ms: QUEUE_KEY_TTL_MS, teamup_in: teamupIn, teamup_out: teamupOut, invite_in: inviteIn });
   }
