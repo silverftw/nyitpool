@@ -15,6 +15,17 @@ const SCALE = 173.7178;
 
 export const GLICKO_DEFAULTS = { rating: 1500, rd: 350, vol: 0.06 };
 
+/** Glicko-2 g factor: how much an opponent's RD dampens the expected-score curve. */
+const gFactor = rd => {
+  const phi = rd / SCALE;
+  return 1 / Math.sqrt(1 + (3 * phi * phi) / (Math.PI * Math.PI));
+};
+
+/** Expected score for `a` against opponent `b` — the Glicko-2 E(a,b). */
+export function expected(a, b) {
+  return 1 / (1 + Math.exp(-gFactor(b.rd) * (a.rating / SCALE - b.rating / SCALE)));
+}
+
 /** Rate one player from a list of games [{ rating, rd, score }] (score: 1 win / 0 loss / .5 draw). */
 export function rate(player, games) {
   const p = { ...GLICKO_DEFAULTS, ...player };
@@ -31,10 +42,8 @@ export function rate(player, games) {
   let vInv = 0;
   let dSum = 0;
   for (const gm of games) {
-    const muj = gm.rating / SCALE;
-    const phij = gm.rd / SCALE;
-    const gj = 1 / Math.sqrt(1 + (3 * phij * phij) / (Math.PI * Math.PI));
-    const ej = 1 / (1 + Math.exp(-gj * (mu - muj)));
+    const gj = gFactor(gm.rd);
+    const ej = expected(p, gm);
     vInv += gj * gj * ej * (1 - ej);
     dSum += gj * (gm.score - ej);
   }
@@ -75,10 +84,8 @@ export function rate(player, games) {
 
   let muSum = 0;
   for (const gm of games) {
-    const muj = gm.rating / SCALE;
-    const phij = gm.rd / SCALE;
-    const gj = 1 / Math.sqrt(1 + (3 * phij * phij) / (Math.PI * Math.PI));
-    const ej = 1 / (1 + Math.exp(-gj * (mu - muj)));
+    const gj = gFactor(gm.rd);
+    const ej = expected(p, gm);
     muSum += gj * (gm.score - ej);
   }
   const muPrime = mu + phiPrime * phiPrime * muSum;

@@ -282,6 +282,20 @@
     display:flex;flex-direction:column;gap:10px;
   }
   .vsrow{display:flex;flex-direction:column;gap:6px}
+  /* card footer: action buttons + win-prob line. Phones stack them (buttons
+     above, line last, bottom-left); wide screens put both on ONE row — the
+     line breaks onto two and sits left of the buttons. */
+  .tfoot{display:flex;flex-direction:column-reverse;gap:10px}
+  .winprob{
+    font-size:.72rem;font-weight:800;color:var(--felt);
+    font-variant:small-caps;letter-spacing:.08em;
+  }
+  .winprob br{display:none}
+  @media (min-width:701px){
+    .tfoot{flex-direction:row;align-items:center;flex-wrap:wrap}
+    .tfoot .winprob{flex:1;min-width:0}
+    .winprob br{display:inline}
+  }
   /* table card = ONE full-width column (1xN): team rows, VS divider row, other
      team — full-width rows keep long nicknames readable, no half-columns */
   .pgraph{display:flex;flex-direction:column;gap:6px;min-width:0}
@@ -1093,6 +1107,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+              <div class="cl-item"><span class="chip">PR59</span><span>The table card predicts the matchup — "Alice's team has a 73% chance of winning" from the Glicko math (hidden when guests or too close to call)</span></div>
               <div class="cl-item"><span class="chip">PR58</span><span>Table card rework: full-width player cards — nickname + rank over @username + rating — stacked with a VS divider between teams</span></div>
               <div class="cl-item"><span class="chip">PR56</span><span>Admins now see a pending-match count on the lock button and the admin page</span></div>
               <div class="cl-item"><span class="chip">PR55</span><span>Control the timer from your phone — scan the QR on the timer screen</span></div>
@@ -1838,6 +1853,7 @@ const Hub = (() => {
 
   /* ---------- tab 1: live queue ---------- */
   let parties = [];
+  let tableWinProb = null; // favored-side win prob for the ON-THE-TABLE card (server-computed Glicko E)
   let teamupIn = null;      // a request waiting on ME (I own the duo) -> popup
   let teamupOut = null;     // MY pending request -> "request sent…" on the row
   let teamupSentAt = 0;     // client-side 5s resend cool-down
@@ -1859,6 +1875,7 @@ const Hub = (() => {
     try {
       const r = await api('/queue');
       parties = r.parties;
+      tableWinProb = r.table_win_prob || null;
       qMode = { mode: r.mode, override: r.override, schedule: r.schedule || qMode.schedule };
       qKey = { required: !!r.key_required, valid: r.key_valid !== false };
       if (r.key_ttl_ms) keyTtlMs = r.key_ttl_ms; // server owns the TTL
@@ -2231,7 +2248,22 @@ const Hub = (() => {
             'Vote to skip ' + (p.p1 ? p.p1.name : 'this party') + ' off the table', 'btn tiny'));
         }
       });
-      nowBox.append(head, vsrow, btns);
+      // card footer: win-prob line (when there's a real two-party matchup)
+      // stacked above/below per breakpoint — see .tfoot CSS
+      const foot = el('div', 'tfoot');
+      if (playing.length === 2 && tableWinProb) {
+        const wp = el('div', 'winprob');
+        if (tableWinProb.pct === 50) {
+          wp.append(el('span', null, 'Too close to call'));
+        } else {
+          wp.append(el('span', null, tableWinProb.nickname + "'s team"),
+            el('br'),
+            el('span', null, ' has a ' + tableWinProb.pct + '% chance of winning'));
+        }
+        foot.append(wp);
+      }
+      foot.append(btns);
+      nowBox.append(head, vsrow, foot);
     }
 
     list.innerHTML = '';
