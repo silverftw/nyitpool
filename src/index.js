@@ -121,16 +121,26 @@ const DEFAULT_SCHED = { open: '09:00', duo_start: '12:00', duo_end: '18:00', clo
 const SCHED_KEYS = ['open', 'duo_start', 'duo_end', 'close'];
 const hm = s => { const [h, m] = String(s).split(':').map(Number); return h * 60 + m; };
 
+/* TEST_TIME_OVERRIDE pins the clock for tests: "10:00" (time only) or
+   "2026-11-27 10:00" (a full date, so weekday-dependent rules can be tested). */
+const TTO_RE = /^(?:(\d{4}-\d{2}-\d{2})\s+)?(\d{1,2}):(\d{2})$/;
+
 function nyMinutes(env) {
-  if (env.TEST_TIME_OVERRIDE && /^\d{1,2}:\d{2}$/.test(env.TEST_TIME_OVERRIDE)) {
-    const [h, m] = env.TEST_TIME_OVERRIDE.split(':').map(Number);
-    return (h % 24) * 60 + m;
-  }
+  const m = TTO_RE.exec(env.TEST_TIME_OVERRIDE || '');
+  if (m) return (Number(m[2]) % 24) * 60 + Number(m[3]);
   const parts = new Intl.DateTimeFormat('en-US',
     { timeZone: TZ, hour: 'numeric', minute: 'numeric', hour12: false }).formatToParts(new Date());
   const h = Number(parts.find(p => p.type === 'hour').value) % 24;
-  const m = Number(parts.find(p => p.type === 'minute').value);
-  return h * 60 + m;
+  const min = Number(parts.find(p => p.type === 'minute').value);
+  return h * 60 + min;
+}
+
+/* ET weekday, 0=Sun..6=Sat — used by the no-logging-Fridays rule */
+function nyWeekday(env) {
+  const m = TTO_RE.exec(env.TEST_TIME_OVERRIDE || '');
+  if (m && m[1]) return new Date(m[1] + 'T12:00:00Z').getUTCDay();
+  const w = new Intl.DateTimeFormat('en-US', { timeZone: TZ, weekday: 'short' }).format(new Date());
+  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(w);
 }
 
 function windowMode(env, sched) {
@@ -1334,6 +1344,10 @@ async function handleApi(request, env, url) {
 
   /* ---------- match logging & confirmation ---------- */
   if (pathname === '/api/matches/submit' && method === 'POST') {
+    // club policy: logging only Mon–Thu — no new matches Fri/Sat/Sun; the desk
+    // can still approve/edit/fix weekend data via the admin paths below
+    const wd = nyWeekday(env);
+    if (wd === 0 || wd >= 5) return bad('match logging is off on Fridays and weekends', 403);
     const user = await requireUser(request, env);
     const body = await request.json().catch(() => null);
     const format = body?.format;

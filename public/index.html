@@ -2428,6 +2428,19 @@ const Hub = (() => {
     });
   }
 
+  /* club policy: match logging only Mon–Thu (ET) — server 403 is the backstop */
+  const isWeekendBlockedET = () =>
+    ['Fri', 'Sat', 'Sun'].includes(
+      new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short' }).format(new Date()));
+  const applyFridayGate = () => {
+    const btn = $('#log-form button[type="submit"]');
+    const off = isWeekendBlockedET();
+    btn.disabled = off;
+    $('#log-msg').textContent = off ? '⚠️ Logging is off on Fridays and weekends.' : '';
+  };
+  applyFridayGate();
+  document.addEventListener('visibilitychange', applyFridayGate);
+
   $('#log-form').addEventListener('submit', async e => {
     e.preventDefault();
     const msg = $('#log-msg');
