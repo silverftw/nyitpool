@@ -73,38 +73,31 @@ async function issueToken(uid, env) {
 }
 
 /* ============================ auth IP watchlist ============================ */
-/* 2026-11-21 admin-pin compromise: known attacker source IPs. Residential/
-   mobile addresses rotate (CGNAT, DHCPv6), so we match by prefix, not exact
-   IP — a hit is a lead, not proof. Every auth attempt from a watched prefix
-   writes an audit_log row with the account + IP so a compromised main account
-   identifies itself the moment its owner signs in. Prefix list reviewed after
-   the incident is closed; never auto-ban on a watchlist hit. */
-const WATCHED_IP_PREFIXES = [
-  '51.158.254.168',        // Scaleway Amsterdam — scripted fake-match bot
-  '66.108.29.182',         // Charter residential (NYC area)
-  '2603:7000:4500:5a3b:',  // Charter residential (IPv6)
-  '2607:fb91:309c:3c8:',   // Charter residential (IPv6)
-  '2607:fb90:e88b:890a:',  // T-Mobile mobile (IPv6) — NOT user's home /64
-  // removed 2603:7001:e1f0:25c0: — turns out to be the owner's home T-Mobile /64,
-  // it false-flagged the owner's own logins; full auth_ip rows still cover it
-];
-
+/* 2026-11-21 admin-pin compromise: known attacker source IPs live in the
+   ip_watchlist DB table (migration 0011), NOT in code — the repo is public
+   and a public watchlist tells the attacker they're flagged. Rows are
+   prefixes (residential/mobile IPv6 rotates), matched with startsWith; a hit
+   is a lead, not proof. Every auth attempt from a watched prefix writes an
+   audit_log row with the account + IP. Managed via /api/admin/watchlist;
+   never auto-ban on a hit. */
 function clientIp(request) {
   return request.headers.get('cf-connecting-ip') || request.headers.get('x-real-ip') || 'unknown';
 }
 
-function watchedPrefix(ip) {
-  return WATCHED_IP_PREFIXES.find(p => ip.startsWith(p)) || null;
+async function watchedPrefix(db, ip) {
+  const rows = await db.prepare('SELECT prefix FROM ip_watchlist').all();
+  return rows.results.map(r => r.prefix).find(p => ip.startsWith(p)) || null;
 }
 
 /* Record an auth attempt: every one lands in audit_log; watched prefixes are
    flagged as their own row type + a console warning (surfaces in Workers Logs). */
 async function auditAuth(env, kind, username, request, ok, userId = null) {
   const ip = clientIp(request);
-  const hit = watchedPrefix(ip);
+  let hit = null;
+  try { hit = await watchedPrefix(env.DB, ip); } catch { /* watchlist must never break auth */ }
   await audit(env.DB, hit ? 'watchlist_hit' : 'auth_ip',
-    userId, `${kind} @${username} ip=${ip}${hit ? ' matched=' + hit : ''}${ok ? '' : ' FAILED'}`);
-  if (hit) console.warn(`WATCHLIST HIT: ${kind} @${username} ip=${ip} matched=${hit}${ok ? '' : ' (failed auth)'}`);
+    userId, `${kind} @${username} ip=${ip}${hit ? ' matched=***' : ''}${ok ? '' : ' FAILED'}`);
+  if (hit) console.warn(`WATCHLIST HIT: ${kind} @${username} ip=${ip}${ok ? '' : ' (failed auth)'}`);
 }
 
 async function currentUser(request, env) {
@@ -1531,6 +1524,32 @@ async function handleApi(request, env, url) {
        ORDER BY b.created_at DESC, b.user_id DESC LIMIT 200`
     ).all();
     return json({ bans: results });
+  }
+
+  /* ---------- admin: IP watchlist (see migration 0011) ---------- */
+  if (pathname === '/api/admin/watchlist' && method === 'GET') {
+    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const { results } = await env.DB.prepare(
+      'SELECT prefix, note, created_at FROM ip_watchlist ORDER BY created_at DESC'
+    ).all();
+    return json({ watchlist: results });
+  }
+  if (pathname === '/api/admin/watchlist' && method === 'POST') {
+    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const body = await request.json().catch(() => null);
+    const prefix = String(body?.prefix || '').trim();
+    if (!prefix) return bad('prefix required');
+    const action = body?.remove ? 'DELETE' : 'INSERT';
+    if (action === 'DELETE') {
+      await env.DB.prepare('DELETE FROM ip_watchlist WHERE prefix = ?').bind(prefix).run();
+      await audit(env.DB, 'watchlist_remove', null, prefix.slice(0, 30));
+      return json({ ok: true, removed: prefix });
+    }
+    await env.DB.prepare(
+      'INSERT OR REPLACE INTO ip_watchlist (prefix, note, created_at) VALUES (?, ?, ?)'
+    ).bind(prefix, String(body?.note || '').slice(0, 120), Date.now()).run();
+    await audit(env.DB, 'watchlist_add', null, prefix.slice(0, 30));
+    return json({ ok: true, added: prefix });
   }
 
   if (pathname === '/api/admin/skip-bans' && method === 'POST') {
