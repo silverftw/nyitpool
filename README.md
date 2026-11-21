@@ -46,18 +46,21 @@ Connect the repo to Cloudflare **Workers Builds** so every `git push` to `main` 
 ## Secrets (required before first deploy of the companion)
 
 ```bash
-npx wrangler secret put ADMIN_PIN        # admin overrides (X-Admin-Pin header)
-npx wrangler secret put SESSION_SECRET   # HMAC key for session tokens (optional; falls back to ADMIN_PIN)
+npx wrangler secret put SESSION_SECRET   # HMAC key for session tokens
 ```
 
-Local dev: create `.dev.vars` (gitignored) with `ADMIN_PIN=...` and `SESSION_SECRET=...`.
+Local dev: create `.dev.vars` (gitignored) with `SESSION_SECRET=...`.
+
+Admin is a per-user permission: `UPDATE users SET is_admin = 1 WHERE username IN (...)`
+(migration 0014 adds the column). A signed-in session on a flagged account is always
+admin — no unlock step, no shared PIN (removed 2026-11-21).
 
 ## Mobile Companion (Table Queue tile)
 
 - **Accounts**: username + 4–6 digit PIN (PBKDF2-SHA256 hash, HMAC-signed session token kept in localStorage).
 - **Live queue**: the table hosts **two parties** — a party is a team: **Solo** (one player) or **Duo** (one or two; teammate/guest attachable, open slots claimable while waiting). Winner stays, loser's seat refills from the line. Solo vs Duo at the table = 2v1 (log it as `2v1`).
 - **Queue hours (ET)**: open **9am–9pm**; solo play allowed **9–12am** and **6–9pm**, **duo-only noon–6pm**. At close the queue clears itself and joins are refused (403) — enforced server-side in `America/New_York`.
-- **Admin override**: sign in, tap 🔒, enter the `ADMIN_PIN` — the drawer gains a **Queue status** switcher: 🕰 **Auto** (clock rules) / 🟢 **Open** / 🕒 **Duo only** / ⛔ **Offline** (wipes the live queue). Override beats the clock until set back to Auto. `POST /api/admin/queue-mode` `{mode}` with `X-Admin-Pin`.
+- **Admin override**: sign in with an account flagged `is_admin` (see Secrets above) — the header shows the **ADMIN** tag; the admin page has a **Queue status** switcher: 🕰 **Auto** (clock rules) / 🟢 **Open** / 🕒 **Duo only** / ⛔ **Offline** (wipes the live queue). Override beats the clock until set back to Auto. `POST /api/admin/queue-mode` `{mode}` with the admin session's Bearer token.
 - **3-vote consensus skip**: any three accounts can skip a party out of the line.
 - **Match logging**: ranked (all registered) or casual — any guest forces casual. Other registered players confirm in the notification drawer; a single confirmation from the opposing team logs the match. Disputes escalate to admin force-approve.
 - **Glicko-2 ratings**: per-player updates vs composite-team opponents for 2v2/2v1; tiers: Provisional / Cue Rookie / Table Regular / Rack Shark / 8-Ball Elite.
@@ -65,7 +68,7 @@ Local dev: create `.dev.vars` (gitignored) with `ADMIN_PIN=...` and `SESSION_SEC
 
 ## API
 
-Auth: `POST /api/auth/register|login`, `GET /api/auth/me` (Bearer token). Admin actions take `X-Admin-Pin`.
+Auth: `POST /api/auth/register|login`, `GET /api/auth/me` (Bearer token). Admin actions need a signed-in `is_admin` session's Bearer token.
 
 - `GET /api/queue` — active parties (playing first, then waiting, with skip-vote counts)
 - `POST /api/queue/join` `{format, p2_user_id? | p2_guest_name?}`
@@ -73,7 +76,7 @@ Auth: `POST /api/auth/register|login`, `GET /api/auth/me` (Bearer token). Admin 
 - `POST /api/queue/:id/vote-skip` — one vote per account; ≥3 skips the party
 - `DELETE /api/queue/:id` — leave own party (admin: any)
 - `POST /api/matches/submit` `{match_type, format, winner_team, teams:{1:[…],2:[…]}}` (players: `{user_id}` or `{guest_name}`)
-- `GET /api/notifications` — my pending confirmations (+ all pending/disputed with admin pin)
+- `GET /api/notifications` — my pending confirmations (+ all pending/disputed for admin sessions)
 - `POST /api/matches/:id/respond` `{action: "confirm"|"dispute"}`
 - `POST /api/matches/:id/admin-approve` — admin force-commit
 - `GET /api/leaderboard` — rankings
