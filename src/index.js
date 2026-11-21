@@ -1712,6 +1712,7 @@ async function handleApi(request, env, url) {
     const body = await request.json().catch(() => null);
     const winner = body?.winner_team != null ? Number(body.winner_team) : row.winner_team;
     const type = body?.match_type != null ? body.match_type : row.match_type;
+    if (body?.match_type === 'casual' && row.match_type !== 'casual') return bad('matches are ranked-only since #21; converting ranked → casual is disabled', 400); // existing casual rows keep flipping →R only
     if (![1, 2].includes(winner)) return bad('winner_team must be 1 or 2');
     if (!['ranked', 'casual'].includes(type)) return bad('match_type must be ranked or casual');
     await env.DB.prepare('UPDATE matches SET winner_team = ?, match_type = ? WHERE id = ?')
