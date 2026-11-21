@@ -1425,8 +1425,9 @@ function el(tag, cls, text) {
   return n;
 }
 
-/* shared pager under every long table: ‹ prev / Page N / next ›
-   state = { page, has_more }; onChange(nextPage) re-renders the table */
+/* shared pager under every long table: ‹ prev / Page N [of M] / next ›
+   state = { page, has_more, pages? }; onChange(nextPage) re-renders the table;
+   pages (when the total is known) renders "Page N of M" */
 function mkPager(state, onChange) {
   const nav = el('div', 'pager');
   const prev = el('button', 'btn tiny', '‹');
@@ -1439,7 +1440,8 @@ function mkPager(state, onChange) {
   next.disabled = !state.has_more;
   next.setAttribute('aria-label', 'Next page');
   next.addEventListener('click', () => onChange(state.page + 1));
-  nav.append(prev, el('span', 'pg-info', 'Page ' + state.page), next);
+  const label = 'Page ' + state.page + (state.pages ? ' of ' + state.pages : '');
+  nav.append(prev, el('span', 'pg-info', label), next);
   return nav;
 }
 
@@ -2639,10 +2641,14 @@ const Hub = (() => {
     : t === 'Rack Shark' ? ' shark'
     : '';
 
-  /* board pages client-side (fully fetched already) — podium + tier badges stay
-     GLOBAL: ranks/tiers always count from the true top, whatever page is open */
+  /* Ranks pages are SERVER-side (?page=N, 10 rows + total) — every registered
+     player is reachable, no top-50 cap. rank_base keeps podium + tier badges
+     GLOBAL: ranks/tiers always count from the true top, whatever page is open.
+     boardRows stays separate = the table-card badge cache (legacy top-50 fetch). */
   const BOARD_PER_PAGE = 10;
   let boardPage = 1;
+  let boardPageRows = [];
+  let boardTotal = 0;
   let boardRows = [];
   let boardFetchedAt = 0;
 
@@ -2652,8 +2658,8 @@ const Hub = (() => {
     list.innerHTML = '';
     podium.hidden = true;
     podium.innerHTML = '';
-    if (!boardRows.length) { list.append(el('div', 'q-empty', 'No players yet — create an account and log a match.')); return; }
-    if (boardRows.length >= 3) { // podium: 2nd · 1st · 3rd
+    if (!boardTotal && !boardPageRows.length) { list.append(el('div', 'q-empty', 'No players yet — create an account and log a match.')); return; }
+    if (boardPage === 1 && boardPageRows.length >= 3) { // podium: 2nd · 1st · 3rd, page 1 only
       podium.hidden = false;
       const mkPod = (u, medal, cls) => {
         const pod = el('div', 'pod ' + cls);
@@ -2662,12 +2668,11 @@ const Hub = (() => {
         pod.append(el('span', 'elo mono', String(Math.round(u.glicko_rating))));
         return pod;
       };
-      podium.append(mkPod(boardRows[1], '🥈', 'p2'), mkPod(boardRows[0], '🥇', 'p1'), mkPod(boardRows[2], '🥉', 'p3'));
+      podium.append(mkPod(boardPageRows[1], '🥈', 'p2'), mkPod(boardPageRows[0], '🥇', 'p1'), mkPod(boardPageRows[2], '🥉', 'p3'));
     }
-    if ((boardPage - 1) * BOARD_PER_PAGE >= boardRows.length) boardPage = 1; // list shrank under us
-    const start = (boardPage - 1) * BOARD_PER_PAGE;
-    boardRows.slice(start, start + BOARD_PER_PAGE).forEach((u, k) => {
-      const i = start + k; // global rank — position-based tiers count from the real top
+    const pages = Math.max(1, Math.ceil(boardTotal / BOARD_PER_PAGE));
+    boardPageRows.forEach((u, k) => {
+      const i = (boardPage - 1) * BOARD_PER_PAGE + k; // global rank — position-based tiers count from the real top
       const games = u.ranked_wins + u.ranked_losses;
       const t = tier(i, u.glicko_rating, games);
       const row = el('div', 'lrow');
@@ -2691,17 +2696,19 @@ const Hub = (() => {
     });
     const pg = $('#board-pager');
     pg.innerHTML = '';
-    if (boardRows.length > BOARD_PER_PAGE) {
-      pg.append(mkPager({ page: boardPage, has_more: start + BOARD_PER_PAGE < boardRows.length },
-        p => { boardPage = p; renderBoardPage(); }));
+    if (pages > 1) {
+      pg.append(mkPager({ page: boardPage, pages, has_more: boardPage < pages },
+        p => { boardPage = p; pollStamp.board = Date.now(); refreshBoard(); })); // page flips = explicit refresh, skip the 30s poll throttle
     }
   }
 
   async function refreshBoard() {
     if (tab !== 'board') return;
     try {
-      boardRows = (await api('/leaderboard')).leaderboard;
-      boardFetchedAt = Date.now();
+      const data = await api('/leaderboard?page=' + boardPage);
+      boardPageRows = data.leaderboard;
+      boardTotal = data.total || 0;
+      if (boardPage > 1 && !boardPageRows.length) { boardPage = 1; return refreshBoard(); }
       renderBoardPage();
     } catch { /* keep old render */ }
   }
