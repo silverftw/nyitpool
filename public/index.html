@@ -559,6 +559,22 @@
     padding:14px clamp(14px,4vw,24px) calc(14px + env(safe-area-inset-bottom));
     max-width:680px;margin:0 auto;
   }
+  /* admin tab strip — bottomnav tokens, lighter: one sticky row under the topbar */
+  .adm-tabs{
+    position:sticky;top:0;z-index:40;display:flex;gap:4px;overflow-x:auto;
+    background:color-mix(in srgb,var(--panel) 92%,transparent);backdrop-filter:blur(10px);
+    border:1px solid var(--line);border-radius:16px;padding:5px;
+    box-shadow:var(--shadow);scrollbar-width:none;
+  }
+  .adm-tabs::-webkit-scrollbar{display:none}
+  .adm-tabs button{
+    position:relative;flex:1 0 auto;display:flex;align-items:center;justify-content:center;gap:5px;
+    padding:8px 7px;border-radius:12px;color:var(--faint);font-size:.66rem;font-weight:800;
+    letter-spacing:.03em;text-transform:uppercase;transition:.15s;white-space:nowrap;
+  }
+  .adm-tabs button.on{color:var(--felt);background:color-mix(in srgb,var(--felt) 13%,transparent)}
+  /* the pending badge overlays the tab corner so it never widens the strip */
+  .adm-tabs button .adm-n{position:absolute;top:-4px;right:2px;margin-left:0;vertical-align:0}
   #adm-pending{display:flex;flex-direction:column;gap:8px}
   .adm-sub-h{font-size:.7rem;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--danger);margin-top:6px}
   .modegrid4{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -583,7 +599,7 @@
   .audit .a{flex-shrink:0;min-width:92px;font-size:.7rem;color:var(--text)}
   .audit .a .au{color:var(--faint)}
   .audit .a .aa{color:var(--gold);font-weight:800}
-  .audit .d{color:var(--muted);flex:1;min-width:0}
+  .audit .d{color:var(--muted);flex:1;min-width:0;overflow-wrap:anywhere} /* JSON/IP details must not push the page wide */
   .audit .w{color:var(--faint);font-size:.68rem;flex-shrink:0;font-variant-numeric:tabular-nums}
   .pager{display:flex;gap:10px;justify-content:center;align-items:center;margin-top:12px}
   .pager .pg-info{color:var(--muted);font-size:.78rem;font-variant-numeric:tabular-nums;min-width:56px;text-align:center}
@@ -1194,72 +1210,93 @@
         <span class="badge">ADMIN ACCOUNT</span>
       </div>
 
-      <div class="sec-h">Queue status</div>
-      <div class="modegrid4" id="admin-modes">
-        <button class="mbtn" data-m="auto" type="button">🕰 Auto<small>time windows</small></button>
-        <button class="mbtn" data-m="open" type="button">🟢 Open<small>solo + duo</small></button>
-        <button class="mbtn" data-m="duo-only" type="button">🕒 Duo only<small>no solos</small></button>
-        <button class="mbtn" data-m="offline" type="button">⛔ Offline<small>clears queue</small></button>
-      </div>
+      <nav id="adm-tabs" class="adm-tabs">
+        <button data-t="queue" class="on" type="button">Queue</button>
+        <button data-t="line" type="button">Line</button>
+        <button data-t="matches" type="button">Matches<span id="adm-tab-pend-n" class="bell-n adm-n" hidden></span></button>
+        <button data-t="users" type="button">Users</button>
+        <button data-t="mod" type="button">Mod</button>
+        <button data-t="access" type="button">Access</button>
+      </nav>
 
-      <div class="sec-h">Queue hours (ET)</div>
-      <div class="card tight">
-        <div class="hours4">
-          <label>Open<input id="s-open" type="time"></label>
-          <label>Duo from<input id="s-duo_start" type="time"></label>
-          <label>Duo until<input id="s-duo_end" type="time"></label>
-          <label>Close<input id="s-close" type="time"></label>
+      <div class="pane on" data-pane="queue">
+        <div class="sec-h">Queue status</div>
+        <div class="modegrid4" id="admin-modes">
+          <button class="mbtn" data-m="auto" type="button">🕰 Auto<small>time windows</small></button>
+          <button class="mbtn" data-m="open" type="button">🟢 Open<small>solo + duo</small></button>
+          <button class="mbtn" data-m="duo-only" type="button">🕒 Duo only<small>no solos</small></button>
+          <button class="mbtn" data-m="offline" type="button">⛔ Offline<small>clears queue</small></button>
         </div>
-        <p class="fine" style="margin:10px 0 0">Duo window from = until disables the solo restriction.</p>
-        <div class="btns" style="margin-top:10px">
-          <button id="s-save" class="btn primary tiny" type="button">Save hours</button>
-          <button id="s-wipe" class="btn danger tiny" type="button">Wipe queue now</button>
+
+        <div class="sec-h">Queue hours (ET)</div>
+        <div class="card tight">
+          <div class="hours4">
+            <label>Open<input id="s-open" type="time"></label>
+            <label>Duo from<input id="s-duo_start" type="time"></label>
+            <label>Duo until<input id="s-duo_end" type="time"></label>
+            <label>Close<input id="s-close" type="time"></label>
+          </div>
+          <p class="fine" style="margin:10px 0 0">Duo window from = until disables the solo restriction.</p>
+          <div class="btns" style="margin-top:10px">
+            <button id="s-save" class="btn primary tiny" type="button">Save hours</button>
+            <button id="s-wipe" class="btn danger tiny" type="button">Wipe queue now</button>
+          </div>
+          <p id="sched-msg" class="fine" style="margin:10px 0 0"></p>
         </div>
-        <p id="sched-msg" class="fine" style="margin:10px 0 0"></p>
       </div>
 
-      <div class="sec-h">Live queue parties</div>
-      <p class="fine" style="margin:-6px 0 0">Fix rosters — search a registered player or type a guest name; edits save themselves. Reorder the line and set who is on the table.</p>
-      <button id="adm-add-party" class="btn ghost tiny" type="button" style="align-self:flex-start;border-style:dashed">+ Add blank party slot</button>
-      <div id="adm-parties" style="display:flex;flex-direction:column;gap:10px"></div>
-
-      <div class="sec-h">Pending &amp; disputed matches<span id="adm-pend-n" class="bell-n adm-n" hidden></span></div>
-      <div id="adm-pending"></div>
-
-      <div class="sec-h">Players</div>
-      <div class="hist-wrap"><table class="simple" id="adm-players"></table></div>
-      <div id="adm-players-pager"></div>
-      <div class="acct-row">
-        <button id="adm-recalc" class="btn tiny" type="button"
-          title="Rebuilds everyone's Glicko rating and W–L record from the full match history — use after bulk history fixes.">↺ Recalculate all ratings</button>
-        <span id="recalc-msg" class="fine"></span>
+      <div class="pane" data-pane="line">
+        <div class="sec-h">Live queue parties</div>
+        <p class="fine" style="margin:-6px 0 0">Fix rosters — search a registered player or type a guest name; edits save themselves. Reorder the line and set who is on the table.</p>
+        <button id="adm-add-party" class="btn ghost tiny" type="button" style="align-self:flex-start;border-style:dashed">+ Add blank party slot</button>
+        <div id="adm-parties" style="display:flex;flex-direction:column;gap:10px"></div>
       </div>
 
-      <div class="sec-h">Queue access QR</div>
-      <div id="adm-qr" class="adm-qr"></div>
-
-      <div class="sec-h">Audit log</div>
-      <div class="card tight" id="adm-audit"></div>
-      <div id="adm-audit-pager"></div>
-
-      <div class="sec-h">Moderation Notifications</div>
-      <p class="fine" style="margin:-6px 0 0">Moderation signals: parties voted off the table, sign-in attempts from watched IPs, and old-admin-PIN honeypot hits.</p>
-      <div class="mod-sub">Skip history</div>
-      <div id="adm-skips" style="display:flex;flex-direction:column;gap:10px"></div>
-      <div class="mod-sub">Flagged-IP logins</div>
-      <div class="card tight" id="adm-flagged"></div>
-      <div class="mod-sub">Old-PIN attempts</div>
-      <div class="card tight" id="adm-pintries"></div>
-
-      <div class="sec-h">Skip ban list</div>
-      <p class="fine" style="margin:-6px 0 0">Players banned from voting to skip parties. Registered accounts only — guests have no identity to ban. Add/remove takes effect instantly.</p>
-      <div class="aslot" style="margin:8px 0">
-        <span class="lb">Who</span>
-        <input id="adm-ban-user" maxlength="24" placeholder="search player…" autocomplete="off">
-        <input id="adm-ban-note" maxlength="140" placeholder="note (optional) — why" style="flex:1.2">
-        <button id="adm-ban-add" class="btn tiny danger" type="button" title="Ban this player from skip-voting">Ban</button>
+      <div class="pane" data-pane="matches">
+        <div class="sec-h">Pending &amp; disputed matches<span id="adm-pend-n" class="bell-n adm-n" hidden></span></div>
+        <div id="adm-pending"></div>
       </div>
-      <div class="hist-wrap"><table class="simple" id="adm-bans"></table></div>
+
+      <div class="pane" data-pane="users">
+        <div class="sec-h">Players</div>
+        <div class="hist-wrap"><table class="simple" id="adm-players"></table></div>
+        <div id="adm-players-pager"></div>
+        <div class="acct-row">
+          <button id="adm-recalc" class="btn tiny" type="button"
+            title="Rebuilds everyone's Glicko rating and W–L record from the full match history — use after bulk history fixes.">↺ Recalculate all ratings</button>
+          <span id="recalc-msg" class="fine"></span>
+        </div>
+
+        <div class="sec-h">Skip ban list</div>
+        <p class="fine" style="margin:-6px 0 0">Players banned from voting to skip parties. Registered accounts only — guests have no identity to ban. Add/remove takes effect instantly.</p>
+        <div class="aslot" style="margin:8px 0">
+          <span class="lb">Who</span>
+          <input id="adm-ban-user" maxlength="24" placeholder="search player…" autocomplete="off">
+          <input id="adm-ban-note" maxlength="140" placeholder="note (optional) — why" style="flex:1.2">
+          <button id="adm-ban-add" class="btn tiny danger" type="button" title="Ban this player from skip-voting">Ban</button>
+        </div>
+        <div class="hist-wrap"><table class="simple" id="adm-bans"></table></div>
+      </div>
+
+      <div class="pane" data-pane="mod">
+        <div class="sec-h">Moderation Notifications</div>
+        <p class="fine" style="margin:-6px 0 0">Moderation signals: parties voted off the table, sign-in attempts from watched IPs, and old-admin-PIN honeypot hits.</p>
+        <div class="mod-sub">Skip history</div>
+        <div id="adm-skips" style="display:flex;flex-direction:column;gap:10px"></div>
+        <div class="mod-sub">Flagged-IP logins</div>
+        <div class="card tight" id="adm-flagged"></div>
+        <div class="mod-sub">Old-PIN attempts</div>
+        <div class="card tight" id="adm-pintries"></div>
+
+        <div class="sec-h">Audit log</div>
+        <div class="card tight" id="adm-audit"></div>
+        <div id="adm-audit-pager"></div>
+      </div>
+
+      <div class="pane" data-pane="access">
+        <div class="sec-h">Queue access QR</div>
+        <div id="adm-qr" class="adm-qr"></div>
+      </div>
     </div>
   </section>
 
@@ -2785,10 +2822,12 @@ const Hub = (() => {
     b.textContent = n > 9 ? '9+' : n;
   }
 
-  /* admin pending counter: header ADMIN chip + admin page section chip.
-     The light poll only returns the admin list to a flagged account's
-     session, so both chips stay hidden otherwise. */
+  /* admin pending counter: header ADMIN chip + admin page section chip +
+     Matches tab badge. The light poll only returns the admin list to a
+     flagged account's session, so all chips stay hidden otherwise. */
+  let admPendingCount = 0; // read by AdminPage.open() to pick the landing tab
   function setAdminPend(n) {
+    admPendingCount = n;
     const show = isAdminUser() && n > 0;
     const b = $('#hub-admin-n');
     b.hidden = !show;
@@ -2796,6 +2835,9 @@ const Hub = (() => {
     const s = $('#adm-pend-n');
     s.hidden = !(isAdminUser() && n);
     s.textContent = n > 9 ? '9+' : n;
+    const t = $('#adm-tab-pend-n');
+    t.hidden = !(isAdminUser() && n);
+    t.textContent = n > 9 ? '9+' : n;
   }
 
   /* ---------- admin page (queue controls, pending, players, audit) ---------- */
@@ -2827,7 +2869,47 @@ const Hub = (() => {
       t.append(thead, tbody);
     }
 
-    let liveSig = ''; // id:status:position of live parties, as last rendered
+    /* ---- tabs: six panes, one sticky strip ----
+       Only the VISIBLE tab's DOM syncs with the 5s poll; hidden panes keep
+       their STATE fresh (refreshQueue updates qMode/parties for all) and
+       re-render when next shown. Fetch-on-open groups (pending detail,
+       players/bans, mod feeds + audit, QR) load when their tab opens and
+       refetch only when stale (>30s or an explicit refresh happened). */
+    const ADM_DEFAULT_TAB = 'queue';
+    let admTab = ADM_DEFAULT_TAB;
+    const ADM_STALE_MS = 30000;
+    const admStamp = { pending: 0, users: 0, mod: 0, access: 0 };
+
+    let liveSig = null; // id:status:position of live parties, as last rendered (null = never rendered)
+
+    function markAdmStale() { Object.keys(admStamp).forEach(k => admStamp[k] = 0); }
+
+    /* fetch-on-tab-OPEN (#48 pattern): each group loads when its tab shows,
+       refetching only past the staleness window */
+    async function loadTabData(force = false) {
+      const due = g => force || Date.now() - admStamp[g] >= ADM_STALE_MS;
+      try {
+        if (admTab === 'matches' && due('pending')) { admStamp.pending = Date.now(); await loadPending(); }
+        if (admTab === 'users' && due('users')) { admStamp.users = Date.now(); await refreshPlayers(); await refreshBans(); }
+        if (admTab === 'mod' && due('mod')) { admStamp.mod = Date.now(); await refreshModFeeds(); await refreshAudit(); }
+        if (admTab === 'access' && due('access')) { admStamp.access = Date.now(); await loadQr(); }
+      } catch { /* one pane failing must not block the rest */ }
+    }
+
+    function showAdmTab(t, hydrate = true) {
+      admTab = t;
+      if (t === 'line') ensureLineRendered(); // render from latest state BEFORE showing
+      $$('#adm-tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
+      $$('#screen-adminpage .pane').forEach(p => p.classList.toggle('on', p.dataset.pane === t));
+      if (hydrate) { window.scrollTo(0, 0); loadTabData(); }
+    }
+
+    /* screen ENTRY (Hub.adminPage): land on Matches when work is waiting, else Queue */
+    function open() {
+      window.scrollTo(0, 0);
+      showAdmTab(admPendingCount > 0 ? 'matches' : ADM_DEFAULT_TAB, false);
+      return refresh();
+    }
 
     async function refresh() {
       if (!isAdminUser()) return;
@@ -2840,13 +2922,18 @@ const Hub = (() => {
       $$('#admin-modes button').forEach(b => {
         b.classList.toggle('on', b.dataset.m === (qMode.override || 'auto'));
       });
-      renderParties();
+      if (admTab === 'line') renderParties(); // hidden Line pane syncs when next shown
+      markAdmStale(); // an explicit refresh follows an action — hidden panes refetch on next open
+      await loadTabData(true); // visible pane: fresh data now
+    }
 
-      // pending & disputed (disputed flagged first, both get approve/reject)
+    /* pending & disputed (disputed flagged first, both get approve/reject) —
+       fetch-on-open: the full rosters for dispute rulings load with the Matches tab */
+    async function loadPending() {
       const pend = $('#adm-pending');
       pend.innerHTML = '';
       try {
-        const { admin } = await api('/pending'); // full rosters for dispute rulings, fetched only with the page open
+        const { admin } = await api('/pending'); // full rosters for dispute rulings, fetched only with the tab open
         const all = admin || [];
         setAdminPend(all.length);
         if (!all.length) pend.append(el('div', 'fine', 'No pending or disputed matches.'));
@@ -2877,8 +2964,11 @@ const Hub = (() => {
           pending.forEach(n => pend.append(mkCard(n)));
         }
       } catch { pend.append(el('div', 'fine', 'Admin only.')); }
+    }
 
-      // queue access QR (lazy-loads a local-generation QR lib from CDN — key never leaves the browser)
+    /* queue access QR (lazy-loads a local-generation QR lib from CDN — key never
+       leaves the browser) — fetch-on-open with the Access tab */
+    async function loadQr() {
       try {
         const { key } = await api('/admin/queue-key');
         const box = $('#adm-qr');
@@ -2905,8 +2995,6 @@ const Hub = (() => {
           box.append(img, el('div', 'qr-url', url));
         }
       } catch (ex) { $('#adm-qr').innerHTML = ''; $('#adm-qr').append(el('div', 'fine center', String(ex.message))); }
-
-      await refreshTail();
     }
 
     /* live queue parties — roster editors + manual table control */
@@ -3017,9 +3105,18 @@ const Hub = (() => {
 
     /* the 5s poll calls this while the admin page is open: party cards must
        track the live queue, or Back to line / Put on table fire on stale
-       parties and the API answers 'party not found'. Never yank inputs out
+       parties and the API answers 'party not found'. Only the VISIBLE tab's
+       DOM syncs — a hidden Line pane resyncs when next shown (its state is
+       kept fresh by refreshQueue in the same poll). Never yank inputs out
        from under a typing admin — focus or unsaved roster edits block a sync. */
     function syncLive() {
+      if (admTab !== 'line') return;
+      ensureLineRendered();
+    }
+
+    /* render #adm-parties from the latest queue state unless it is already
+       current, an admin is typing somewhere, or a roster edit is unsaved */
+    function ensureLineRendered() {
       const live = (parties || []).filter(p => p.status === 'playing' || p.status === 'waiting');
       if (live.map(p => p.id + ':' + p.status + ':' + p.position).join('|') === liveSig) return;
       const ae = document.activeElement;
@@ -3187,14 +3284,10 @@ const Hub = (() => {
     });
     mkPicker(banInput);
 
-    async function refreshTail() {
-      await refreshPlayers();
-      await refreshAudit();
-      await refreshModFeeds();
-      await refreshBans();
-    }
+    $$('#adm-tabs button').forEach(b =>
+      b.addEventListener('click', () => showAdmTab(b.dataset.t)));
 
-    return { refresh, syncLive };
+    return { open, refresh, syncLive };
   })();
 
   /* ---------- lifecycle ---------- */
@@ -3236,7 +3329,7 @@ const Hub = (() => {
   });
 
   buildLogSlots();
-  return { start, stop, adminPage: () => AdminPage.refresh() };
+  return { start, stop, adminPage: () => AdminPage.open() };
 })();
 
 /* ==================== screen 2: config / handicaps ==================== */
