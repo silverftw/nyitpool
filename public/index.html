@@ -172,6 +172,7 @@
   .hours.duo-only{border-color:color-mix(in srgb,var(--warn) 55%,var(--line));color:var(--warn)}
   .hours.closed{border-color:color-mix(in srgb,var(--danger) 55%,var(--line));color:var(--danger)}
   .sec-h{font-size:.7rem;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin:14px 2px -2px}
+  .mod-sub{font-size:.62rem;font-weight:900;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:12px 2px 4px}
   .fine{color:var(--muted);font-size:.84rem;line-height:1.55}
   .mono{font-variant-numeric:tabular-nums}
 
@@ -1240,9 +1241,14 @@
       <div class="card tight" id="adm-audit"></div>
       <div id="adm-audit-pager"></div>
 
-      <div class="sec-h">Recently skipped</div>
-      <p class="fine" style="margin:-6px 0 0">Every party voted off the table in the last 7 days, with who voted.</p>
+      <div class="sec-h">Moderation Notifications</div>
+      <p class="fine" style="margin:-6px 0 0">Moderation signals: parties voted off the table, sign-in attempts from watched IPs, and old-admin-PIN honeypot hits.</p>
+      <div class="mod-sub">Skip history</div>
       <div id="adm-skips" style="display:flex;flex-direction:column;gap:10px"></div>
+      <div class="mod-sub">Flagged-IP logins</div>
+      <div class="card tight" id="adm-flagged"></div>
+      <div class="mod-sub">Old-PIN attempts</div>
+      <div class="card tight" id="adm-pintries"></div>
 
       <div class="sec-h">Skip ban list</div>
       <p class="fine" style="margin:-6px 0 0">Players banned from voting to skip parties. Registered accounts only — guests have no identity to ban. Add/remove takes effect instantly.</p>
@@ -1731,21 +1737,16 @@ const Hub = (() => {
     }
     const pin = prompt('Admin PIN');
     if (pin === null || pin === '') return;
-    adminPin = pin;
     try {
-      const { admin, admin_unlocked } = await api('/notifications');
-      if (!admin_unlocked) {
-        adminPin = null;
-        alert('Wrong admin PIN.');
-        return;
-      }
+      // honeypot (2026-11-21 compromise): the shared PIN never unlocks. The
+      // server always fails with the same message — and logs the burned
+      // pre-rotation PIN as an infraction. adminPin stays unset, so no
+      // request carries the header. T24 replaces this gate with per-user
+      // admin accounts; if that ever 200s, the chrome flips back on.
+      await api('/admin/unlock', { method: 'POST', headers: JSON_HDR, body: { pin } });
       setAdminUI(true);
-      setAdminPend((admin || []).length); // show the count now, not on the next 5s tick
       if (tab === 'me') refreshDrawer();
-    } catch (ex) {
-      adminPin = null;
-      alert(ex.message);
-    }
+    } catch (ex) { alert(ex.message); }
   });
 
   $('#hub-admin-chip').addEventListener('click', () => showScreen('adminpage'));
@@ -3093,14 +3094,16 @@ const Hub = (() => {
       } catch { /* pin */ }
     }
 
-    /* every recently skipped table-wide (mirror of the Me-tab skip card) */
-    async function refreshSkips() {
-      const box = $('#adm-skips');
-      box.innerHTML = '';
+    /* Moderation Notifications — three feeds off ONE /admin/mod-events fetch:
+       skip history (mirror of the Me-tab skip card), flagged-IP sign-ins
+       (audit rows from the PR #64 auth trap) and old-admin-PIN honeypot hits */
+    async function refreshModFeeds() {
+      const skips = $('#adm-skips'), flagged = $('#adm-flagged'), pintries = $('#adm-pintries');
+      skips.innerHTML = ''; flagged.innerHTML = ''; pintries.innerHTML = '';
       try {
-        const { skips } = await api('/admin/skip-history');
-        if (!skips.length) { box.append(el('div', 'fine', 'No skipped parties in the last 7 days.')); return; }
-        skips.forEach(s => {
+        const { skips: skipList, flagged_logins, old_pin_attempts } = await api('/admin/mod-events');
+        if (!skipList.length) skips.append(el('div', 'fine', 'No skipped parties in the last 7 days.'));
+        skipList.forEach(s => {
           const card = el('div', 'pend');
           const names = s.members.map(m => m.registered
             ? m.name + (m.username ? ' @' + m.username : '') : m.name).join(' & ');
@@ -3108,9 +3111,37 @@ const Hub = (() => {
           card.append(el('div', 'fine', 'With: ' + names));
           card.append(el('div', 'fine',
             'Voted to skip: ' + s.voters.map(v => v.nickname + (v.username ? ' @' + v.username : '')).join(', ')));
-          box.append(card);
+          skips.append(card);
         });
-      } catch { box.append(el('div', 'fine', 'Admin pin required.')); }
+        if (!flagged_logins.length) flagged.append(el('div', 'fine', 'No flagged sign-in attempts yet.'));
+        flagged_logins.forEach(a => {
+          const row = el('div', 'audit');
+          row.append(el('span', 't', a.type));
+          const who = el('span', 'a');
+          if (a.actor) {
+            who.append(el('span', 'an', a.actor));
+            if (a.actor_user) who.append(el('span', 'au', ' @' + a.actor_user));
+          } else who.append(el('span', 'aa', '—'));
+          row.append(who);
+          row.append(el('span', 'd', a.detail));
+          row.append(el('span', 'w', fmtWhen(a.at)));
+          flagged.append(row);
+        });
+        if (!old_pin_attempts.length) pintries.append(el('div', 'fine', 'No honeypot hits — nobody has entered the old PIN.'));
+        old_pin_attempts.forEach(t => {
+          const row = el('div', 'audit');
+          row.append(el('span', 't', 'old_pin'));
+          const who = el('span', 'a');
+          if (t.nickname) {
+            who.append(el('span', 'an', t.nickname));
+            if (t.username) who.append(el('span', 'au', ' @' + t.username));
+          } else who.append(el('span', 'an', 'IP ' + (t.ip || 'unknown')));
+          row.append(who);
+          row.append(el('span', 'd', t.detail || 'entered old admin PIN'));
+          row.append(el('span', 'w', fmtWhen(t.created_at)));
+          pintries.append(row);
+        });
+      } catch { skips.append(el('div', 'fine', 'Admin pin required.')); }
     }
 
     /* skip ban list: revoke skip-vote rights (registered players only —
@@ -3152,7 +3183,7 @@ const Hub = (() => {
     async function refreshTail() {
       await refreshPlayers();
       await refreshAudit();
-      await refreshSkips();
+      await refreshModFeeds();
       await refreshBans();
     }
 
