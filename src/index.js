@@ -1344,9 +1344,10 @@ async function handleApi(request, env, url) {
 
   /* ---------- match logging & confirmation ---------- */
   if (pathname === '/api/matches/submit' && method === 'POST') {
-    // club policy: no new match logging on Fridays — the desk can still
-    // approve/edit/fix Friday data via the admin paths below
-    if (nyWeekday(env) === 5) return bad('match logging is off on Fridays', 403);
+    // club policy: logging only Mon–Thu — no new matches Fri/Sat/Sun; the desk
+    // can still approve/edit/fix weekend data via the admin paths below
+    const wd = nyWeekday(env);
+    if (wd === 0 || wd >= 5) return bad('match logging is off on Fridays and weekends', 403);
     const user = await requireUser(request, env);
     const body = await request.json().catch(() => null);
     const format = body?.format;
