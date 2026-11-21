@@ -84,8 +84,9 @@ const WATCHED_IP_PREFIXES = [
   '66.108.29.182',         // Charter residential (NYC area)
   '2603:7000:4500:5a3b:',  // Charter residential (IPv6)
   '2607:fb91:309c:3c8:',   // Charter residential (IPv6)
-  '2607:fb90:e88b:890a:',  // T-Mobile mobile (IPv6)
-  '2603:7001:e1f0:25c0:',  // T-Mobile mobile (IPv6)
+  '2607:fb90:e88b:890a:',  // T-Mobile mobile (IPv6) — NOT user's home /64
+  // removed 2603:7001:e1f0:25c0: — turns out to be the owner's home T-Mobile /64,
+  // it false-flagged the owner's own logins; full auth_ip rows still cover it
 ];
 
 function clientIp(request) {
