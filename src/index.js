@@ -6,8 +6,11 @@
  *
  * Bindings (wrangler.jsonc): env.ASSETS (assets), env.DB (D1).
  * Secrets (`wrangler secret put ...` / .dev.vars for local):
- *   ADMIN_PIN       — admin override actions (X-Admin-Pin header)
- *   SESSION_SECRET  — HMAC key for session tokens (falls back to ADMIN_PIN)
+ *   SESSION_SECRET  — HMAC key for session tokens
+ *
+ * Admin (T24): per-user permission — users.is_admin. A signed-in session on a
+ * flagged account IS the admin (requireAdmin); the shared ADMIN_PIN system is
+ * gone. POST /api/admin/unlock stays as an always-403 honeypot for old clients.
  */
 
 import { rate, composite, expected } from './glicko2.js';
@@ -66,7 +69,7 @@ async function verify(token, secret) {
   } catch { return null; }
 }
 
-const sessionSecret = env => env.SESSION_SECRET || env.ADMIN_PIN || 'dev-insecure-secret';
+const sessionSecret = env => env.SESSION_SECRET || 'dev-insecure-secret';
 
 async function issueToken(uid, env) {
   return sign({ uid, exp: Date.now() + 30 * 24 * 3600 * 1000 }, sessionSecret(env));
@@ -119,12 +122,13 @@ async function requireUser(request, env) {
   return user;
 }
 
-async function isAdmin(request, env) {
-  const pin = request.headers.get('x-admin-pin');
-  if (!pin || !env.ADMIN_PIN) return false;
-  const a = await crypto.subtle.digest('SHA-256', enc.encode(pin));
-  const b = await crypto.subtle.digest('SHA-256', enc.encode(env.ADMIN_PIN));
-  return b64url(a) === b64url(b);
+/* T24: admin = per-user flag. Any signed-in session on an is_admin account
+   holds admin until sign-out — no unlock step, no shared PIN. Throws 401 for
+   anonymous callers, 403 for signed-in non-admins (HttpError → JSON error). */
+async function requireAdmin(request, env) {
+  const user = await requireUser(request, env);
+  if (!user.is_admin) throw new HttpError(403, 'admin only');
+  return user;
 }
 
 async function validQueueKey(request, env) {
@@ -146,8 +150,8 @@ class HttpError extends Error {
 
 /* ============================ queue mode: time windows + admin override ============================ */
 /* Base mode comes from ET time windows (9am–9pm open; duo-only noon–6pm; closed otherwise).
-   An admin (X-Admin-Pin) may override to 'open' | 'duo-only' | 'offline' — or 'auto' to
-   hand control back to the clock. Effective mode = override ?? window mode. */
+   An admin (signed-in is_admin account) may override to 'open' | 'duo-only' | 'offline' —
+   or 'auto' to hand control back to the clock. Effective mode = override ?? window mode. */
 
 const TZ = 'America/New_York';
 const DEFAULT_SCHED = { open: '09:00', duo_start: '12:00', duo_end: '18:00', close: '21:00' };
@@ -749,7 +753,7 @@ async function handleApi(request, env, url) {
       await audit(env.DB, 'register', meta.last_row_id, '@' + username);
       await auditAuth(env, 'register', username, request, true, meta.last_row_id);
       return json({ token: await issueToken(meta.last_row_id, env),
-        user: { id: meta.last_row_id, username, nickname } }, 201);
+        user: { id: meta.last_row_id, username, nickname, is_admin: false } }, 201);
     } catch (e) {
       if (String(e).includes('UNIQUE')) return bad('username already taken', 409);
       throw e;
@@ -766,12 +770,14 @@ async function handleApi(request, env, url) {
     if (hash !== user.pin_hash) { await auditAuth(env, 'login', username, request, false, user.id); return bad('wrong username or pin', 401); }
     await auditAuth(env, 'login', username, request, true, user.id);
     return json({ token: await issueToken(user.id, env),
-      user: { id: user.id, username: user.username, nickname: user.nickname } });
+      user: { id: user.id, username: user.username, nickname: user.nickname,
+        is_admin: !!user.is_admin } });
   }
 
   if (pathname === '/api/auth/me' && method === 'GET') {
     const user = await requireUser(request, env);
-    return json({ user: { id: user.id, username: user.username, nickname: user.nickname } });
+    return json({ user: { id: user.id, username: user.username, nickname: user.nickname,
+      is_admin: !!user.is_admin } });
   }
 
   /* ---------- account editor ---------- */
@@ -826,7 +832,7 @@ async function handleApi(request, env, url) {
 
   /* ---------- admin: queue mode override ---------- */
   if (pathname === '/api/admin/queue-mode' && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const body = await request.json().catch(() => null);
     const mode = body?.mode;
     if (!['auto', 'open', 'duo-only', 'offline'].includes(mode)) {
@@ -834,14 +840,14 @@ async function handleApi(request, env, url) {
     }
     await setOverride(env.DB, mode === 'auto' ? null : mode);
     if (mode === 'offline') await clearQueue(env.DB);
-    await audit(env.DB, 'queue_mode', null, 'mode=' + mode);
+    await audit(env.DB, 'queue_mode', admin.id, 'mode=' + mode);
     const eff = await effectiveMode(env.DB, env);
     return json({ ok: true, mode: eff.mode, override: eff.override, schedule: eff.schedule });
   }
 
   /* ---------- admin: schedule editor + queue wipe ---------- */
   if (pathname === '/api/admin/queue-config' && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const body = await request.json().catch(() => null);
     const sched = body?.schedule;
     if (!sched || typeof sched !== 'object') return bad('schedule required');
@@ -855,15 +861,15 @@ async function handleApi(request, env, url) {
       }
     } // duo_start === duo_end disables the duo-only restriction entirely
     await setSchedule(env.DB, sched);
-    await audit(env.DB, 'queue_config', null, JSON.stringify(sched));
+    await audit(env.DB, 'queue_config', admin.id, JSON.stringify(sched));
     const eff = await effectiveMode(env.DB, env);
     return json({ ok: true, mode: eff.mode, override: eff.override, schedule: eff.schedule });
   }
 
   if (pathname === '/api/admin/clear-queue' && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     await clearQueue(env.DB);
-    await audit(env.DB, 'queue_wipe', null, 'queue cleared');
+    await audit(env.DB, 'queue_wipe', admin.id, 'queue cleared');
     return json({ ok: true, cleared: true });
   }
 
@@ -929,7 +935,7 @@ async function handleApi(request, env, url) {
       mode: eff.mode, override: eff.override, schedule: eff.schedule,
       key_required: !!env.QUEUE_KEY, key_valid: await validQueueKey(request, env),
       key_ttl_ms: QUEUE_KEY_TTL_MS, teamup_in: teamupIn, teamup_out: teamupOut, invite_in: inviteIn,
-      skip_banned: !!skipBanned });
+      skip_banned: !!skipBanned, is_admin: !!(user && user.is_admin) });
   }
 
   if (pathname === '/api/queue/join' && method === 'POST') {
@@ -1272,7 +1278,7 @@ async function handleApi(request, env, url) {
     if (!party) return bad('not found', 404);
     const isP1User = user && party.p1_user_id === user.id;
     const isP2User = user && party.p2_user_id === user.id;
-    const admin = await isAdmin(request, env);
+    const admin = !!(user && user.is_admin); // admin session may remove any party
     // guests prove ownership by the nickname they joined with
     const body = await request.json().catch(() => null);
     const guestName = String(body?.guest_name || '').trim().toLowerCase();
@@ -1326,7 +1332,7 @@ async function handleApi(request, env, url) {
 
   /* ---------- admin: party roster edits + manual table control ---------- */
   if (pathname === '/api/admin/parties' && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     // blank duo stub — admin fills the roster afterwards (never auto-promoted)
     const max = await env.DB.prepare(
       'SELECT COALESCE(MAX(position), 0) AS m FROM queue_parties').first();
@@ -1334,13 +1340,13 @@ async function handleApi(request, env, url) {
       `INSERT INTO queue_parties (format, status, created_by_user_id, position, created_at)
        VALUES ('duo', 'waiting', NULL, ?, ?)`
     ).bind(max.m + 1, Date.now()).run();
-    await audit(env.DB, 'admin_party_add', null, 'party=' + meta.last_row_id + ' blank duo');
+    await audit(env.DB, 'admin_party_add', admin.id, 'party=' + meta.last_row_id + ' blank duo');
     return json({ ok: true, id: meta.last_row_id }, 201);
   }
 
   m = pathname.match(/^\/api\/admin\/parties\/(\d+)$/);
   if (m && method === 'PUT') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const party = await env.DB.prepare(
       "SELECT * FROM queue_parties WHERE id = ? AND status IN ('waiting','playing')"
     ).bind(Number(m[1])).first();
@@ -1368,13 +1374,13 @@ async function handleApi(request, env, url) {
       `UPDATE queue_parties SET format = ?, p1_user_id = ?, p1_guest_name = ?, p2_user_id = ?, p2_guest_name = ?
        WHERE id = ?`
     ).bind(format, s1.userId, s1.guest, s2.userId, s2.guest, party.id).run();
-    await audit(env.DB, 'admin_party_edit', null,
+    await audit(env.DB, 'admin_party_edit', admin.id,
       `party=${party.id} ${format} p1=${slotDesc(s1)} p2=${slotDesc(s2)}`);
     return json({ ok: true, id: party.id, format });
   }
 
   if (pathname === '/api/admin/parties/reorder' && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const body = await request.json().catch(() => null);
     const id = Number(body?.id);
     const direction = body?.direction;
@@ -1390,14 +1396,14 @@ async function handleApi(request, env, url) {
         env.DB.prepare('UPDATE queue_parties SET position = ? WHERE id = ?').bind(rows[j].position, rows[i].id),
         env.DB.prepare('UPDATE queue_parties SET position = ? WHERE id = ?').bind(rows[i].position, rows[j].id),
       ]);
-      await audit(env.DB, 'admin_party_reorder', null, `party=${id} ${direction} (swap with party=${rows[j].id})`);
+      await audit(env.DB, 'admin_party_reorder', admin.id, `party=${id} ${direction} (swap with party=${rows[j].id})`);
     }
     return json({ ok: true, id });
   }
 
   m = pathname.match(/^\/api\/admin\/parties\/(\d+)\/promote$/);
   if (m && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const party = await env.DB.prepare(
       "SELECT * FROM queue_parties WHERE id = ? AND status = 'waiting'"
     ).bind(Number(m[1])).first();
@@ -1406,13 +1412,13 @@ async function handleApi(request, env, url) {
       "SELECT COUNT(*) AS n FROM queue_parties WHERE status = 'playing'").first();
     if (n >= 2) return bad('table is full — take a party off first', 409);
     await env.DB.prepare("UPDATE queue_parties SET status = 'playing' WHERE id = ?").bind(party.id).run();
-    await audit(env.DB, 'admin_party_promote', null, 'party=' + party.id);
+    await audit(env.DB, 'admin_party_promote', admin.id, 'party=' + party.id);
     return json({ ok: true, id: party.id });
   }
 
   m = pathname.match(/^\/api\/admin\/parties\/(\d+)\/demote$/);
   if (m && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const party = await env.DB.prepare(
       "SELECT * FROM queue_parties WHERE id = ? AND status = 'playing'"
     ).bind(Number(m[1])).first();
@@ -1425,7 +1431,7 @@ async function handleApi(request, env, url) {
       env.DB.prepare('DELETE FROM skip_votes WHERE party_id = ?').bind(party.id),
     ]);
     await promoteNext(env.DB); // demoting freed a table seat — refill it like every other seat-freeing path
-    await audit(env.DB, 'admin_party_demote', null, 'party=' + party.id + ' to back of line');
+    await audit(env.DB, 'admin_party_demote', admin.id, 'party=' + party.id + ' to back of line');
     return json({ ok: true, id: party.id });
   }
 
@@ -1537,7 +1543,7 @@ async function handleApi(request, env, url) {
      voters named — identical shape to /api/me/skip-history minus the
      "party must include me" filter */
   if (pathname === '/api/admin/skip-history' && method === 'GET') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     return json({ skips: await recentSkips(env.DB) });
   }
 
@@ -1545,7 +1551,7 @@ async function handleApi(request, env, url) {
      Registered users only — guests have no persistent identity to ban.
      The vote route re-checks the table live, so add/remove is instant. */
   if (pathname === '/api/admin/skip-bans' && method === 'GET') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const { results } = await env.DB.prepare(
       `SELECT b.user_id, b.created_at, b.note, u.nickname, u.username
        FROM skip_bans b JOIN users u ON u.id = b.user_id
@@ -1556,33 +1562,33 @@ async function handleApi(request, env, url) {
 
   /* ---------- admin: IP watchlist (see migration 0011) ---------- */
   if (pathname === '/api/admin/watchlist' && method === 'GET') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const { results } = await env.DB.prepare(
       'SELECT prefix, note, created_at FROM ip_watchlist ORDER BY created_at DESC'
     ).all();
     return json({ watchlist: results });
   }
   if (pathname === '/api/admin/watchlist' && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const body = await request.json().catch(() => null);
     const prefix = String(body?.prefix || '').trim();
     if (!prefix) return bad('prefix required');
     const action = body?.remove ? 'DELETE' : 'INSERT';
     if (action === 'DELETE') {
       await env.DB.prepare('DELETE FROM ip_watchlist WHERE prefix = ?').bind(prefix).run();
-      await audit(env.DB, 'watchlist_remove', null, prefix.slice(0, 30));
+      await audit(env.DB, 'watchlist_remove', admin.id, prefix.slice(0, 30));
       return json({ ok: true, removed: prefix });
     }
     await env.DB.prepare(
       'INSERT OR REPLACE INTO ip_watchlist (prefix, note, created_at) VALUES (?, ?, ?)'
     ).bind(prefix, String(body?.note || '').slice(0, 120), Date.now()).run();
-    await audit(env.DB, 'watchlist_add', null, prefix.slice(0, 30));
+    await audit(env.DB, 'watchlist_add', admin.id, prefix.slice(0, 30));
     return json({ ok: true, added: prefix });
   }
 
   /* ---------- admin: login history (see migration 0012) ---------- */
   if (pathname === '/api/admin/login-history' && method === 'GET') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const url = new URL(request.url);
     const ip = url.searchParams.get('ip');
     const username = url.searchParams.get('username');
@@ -1603,7 +1609,7 @@ async function handleApi(request, env, url) {
      PR #64 auth trap writes as 'auth_ip'/'watchlist_hit') and old-admin-PIN
      honeypot hits from mod_events. */
   if (pathname === '/api/admin/mod-events' && method === 'GET') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const { results: flagged } = await env.DB.prepare(
       `SELECT a.at, a.type, a.detail, u.nickname AS actor, u.username AS actor_user
        FROM audit_log a LEFT JOIN users u ON u.id = a.actor_user_id
@@ -1620,14 +1626,13 @@ async function handleApi(request, env, url) {
       flagged_logins: flagged, old_pin_attempts: pinTries });
   }
 
-  /* ---------- admin unlock honeypot (T25) ----------
-     The client's 🔒 prompt posts here. The shared PIN NEVER unlocks anymore:
-     every attempt fails with the exact pre-honeypot failure message so the
-     prompt UX is unchanged (no tip-off), and submitting the OLD compromised
-     PIN additionally lands a mod_events infraction — account-tied when the
-     caller has a session, IP-only when anonymous. All the other admin routes
-     still honor X-Admin-Pin for the current PIN until T24 removes the PIN
-     system entirely; only this validation path is dead by design. */
+  /* ---------- admin unlock honeypot (T25, doubly dead since T24) ----------
+     Pre-T24 clients with the 🔒 prompt in cached HTML still post here. The
+     shared PIN NEVER unlocks: every attempt fails with the exact pre-honeypot
+     failure message (no tip-off), and submitting the OLD compromised PIN
+     additionally lands a mod_events infraction — account-tied when the caller
+     has a session, IP-only when anonymous. Since T24 there is no valid admin
+     PIN anywhere; this route is a pure trap. */
   if (pathname === '/api/admin/unlock' && method === 'POST') {
     const body = await request.json().catch(() => null);
     const pin = String(body?.pin ?? '') || request.headers.get('x-admin-pin') || '';
@@ -1639,7 +1644,7 @@ async function handleApi(request, env, url) {
   }
 
   if (pathname === '/api/admin/skip-bans' && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const body = await request.json().catch(() => null);
     const uid = Number(body?.user_id);
     if (!uid) return bad('user_id required');
@@ -1653,17 +1658,17 @@ async function handleApi(request, env, url) {
       if (String(ex.message).includes('UNIQUE')) return bad('player is already banned', 409);
       throw ex;
     }
-    await audit(env.DB, 'skip_ban', null, 'user=' + uid + ' @' + target.username + (note ? ' note=' + note : ''));
+    await audit(env.DB, 'skip_ban', admin.id, 'user=' + uid + ' @' + target.username + (note ? ' note=' + note : ''));
     return json({ ok: true, user_id: uid }, 201);
   }
 
   m = pathname.match(/^\/api\/admin\/skip-bans\/(\d+)$/);
   if (m && method === 'DELETE') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const uid = Number(m[1]);
     const res = await env.DB.prepare('DELETE FROM skip_bans WHERE user_id = ?').bind(uid).run();
     if (!res.meta.changes) return bad('player is not banned', 404);
-    await audit(env.DB, 'skip_unban', null, 'user=' + uid);
+    await audit(env.DB, 'skip_unban', admin.id, 'user=' + uid);
     return json({ ok: true });
   }
 
@@ -1678,11 +1683,12 @@ async function handleApi(request, env, url) {
     ).bind(user.id).all();
     // honeypot on the poll path: the pre-T25 client validated the admin PIN by
     // polling here with the x-admin-pin header — a replayed old client lands
-    // exactly here, so the burned PIN is logged before the gate is read
+    // exactly here, so the burned PIN is logged before the gate is read (the
+    // header itself is dead since T24; only the trap remains)
     if ((request.headers.get('x-admin-pin') || '') === OLD_ADMIN_PIN) {
       await logModEvent(env, 'old_admin_pin', user.id, request, 'entered old admin PIN');
     }
-    const admin = await isAdmin(request, env);
+    const admin = !!user.is_admin;
     let adminList = null;
     if (admin) {
       adminList = (await env.DB.prepare(
@@ -1706,7 +1712,7 @@ async function handleApi(request, env, url) {
     if ((request.headers.get('x-admin-pin') || '') === OLD_ADMIN_PIN) {
       await logModEvent(env, 'old_admin_pin', user.id, request, 'entered old admin PIN');
     }
-    const admin = await isAdmin(request, env);
+    const admin = !!user.is_admin;
     let adminList = null;
     if (admin) {
       adminList = (await env.DB.prepare(
@@ -1759,13 +1765,13 @@ async function handleApi(request, env, url) {
 
   m = pathname.match(/^\/api\/matches\/(\d+)\/admin-approve$/);
   if (m && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const pending = await env.DB.prepare(
       "SELECT * FROM pending_matches WHERE id = ? AND status IN ('pending','disputed')"
     ).bind(Number(m[1])).first();
     if (!pending) return bad('not found', 404);
     const res = await commitMatch(env.DB, pending);
-    await audit(env.DB, 'admin_approve', null, 'pending=' + pending.id + ' force-committed');
+    await audit(env.DB, 'admin_approve', admin.id, 'pending=' + pending.id + ' force-committed');
     return json({ committed: true, rating_delta: res.rating_delta });
   }
 
@@ -1846,7 +1852,7 @@ async function handleApi(request, env, url) {
   }
 
   if (pathname === '/api/admin/audit' && method === 'GET') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     // ?page= -> 10-per-page slices (pager reads only its page server-side);
     // no page -> legacy flat 200-row response for existing consumers
     const paged = url.searchParams.has('page');
@@ -1854,7 +1860,7 @@ async function handleApi(request, env, url) {
     const limit = paged ? 10 : 200;
     const { results } = await env.DB.prepare(
       `SELECT a.id, a.at, a.type, a.detail, u.nickname AS actor, u.username AS actor_user,
-              (a.actor_user_id IS NULL) AS is_admin
+              (u.is_admin = 1 OR a.actor_user_id IS NULL) AS is_admin
        FROM audit_log a LEFT JOIN users u ON u.id = a.actor_user_id
        ORDER BY a.id DESC LIMIT ? OFFSET ?`
     ).bind(limit + 1, (page - 1) * limit).all();
@@ -1864,14 +1870,14 @@ async function handleApi(request, env, url) {
   }
 
   if (pathname === '/api/admin/queue-key' && method === 'GET') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     return json({ key: env.QUEUE_KEY || null });
   }
 
   /* ---------- admin: edit / delete committed matches, reject pending ---------- */
   m = pathname.match(/^\/api\/admin\/matches\/(\d+)$/);
   if (m && method === 'PUT') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const id = Number(m[1]);
     const row = await env.DB.prepare('SELECT * FROM matches WHERE id = ?').bind(id).first();
     if (!row) return bad('not found', 404);
@@ -1884,25 +1890,25 @@ async function handleApi(request, env, url) {
     await env.DB.prepare('UPDATE matches SET winner_team = ?, match_type = ? WHERE id = ?')
       .bind(winner, type, id).run();
     await replayAllRatings(env.DB); // ratings/W-L recomputed from full history
-    await audit(env.DB, 'admin_match_edit', null,
+    await audit(env.DB, 'admin_match_edit', admin.id,
       'match=' + id + ' winner ' + row.winner_team + '->' + winner + (type !== row.match_type ? ' type->' + type : '') + ' · ratings replayed');
     return json({ ok: true, id, winner_team: winner, match_type: type });
   }
 
   if (m && method === 'DELETE') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const id = Number(m[1]);
     const { meta } = await env.DB.prepare('DELETE FROM matches WHERE id = ?').bind(id).run();
     if (!meta.changes) return bad('not found', 404);
     await env.DB.prepare('DELETE FROM match_players WHERE match_id = ?').bind(id).run();
     await replayAllRatings(env.DB); // undo the match's rating/W-L effects exactly
-    await audit(env.DB, 'admin_match_delete', null, 'match=' + id + ' removed · ratings replayed');
+    await audit(env.DB, 'admin_match_delete', admin.id, 'match=' + id + ' removed · ratings replayed');
     return json({ ok: true, id });
   }
 
   m = pathname.match(/^\/api\/admin\/matches\/(\d+)\/reject$/);
   if (m && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const id = Number(m[1]);
     const pending = await env.DB.prepare('SELECT * FROM pending_matches WHERE id = ?').bind(id).first();
     if (!pending || !['pending', 'disputed'].includes(pending.status)) return bad('not found', 404);
@@ -1910,20 +1916,20 @@ async function handleApi(request, env, url) {
       env.DB.prepare('DELETE FROM pending_match_players WHERE pending_match_id = ?').bind(id),
       env.DB.prepare('DELETE FROM pending_matches WHERE id = ?').bind(id),
     ]);
-    await audit(env.DB, 'admin_match_reject', null, 'pending=' + id + ' rejected' + (pending.status === 'disputed' ? ' (was disputed)' : ''));
+    await audit(env.DB, 'admin_match_reject', admin.id, 'pending=' + id + ' rejected' + (pending.status === 'disputed' ? ' (was disputed)' : ''));
     return json({ ok: true, id, rejected: true });
   }
 
   /* ---------- admin: global rating recalculation ---------- */
   if (pathname === '/api/admin/recalc-ratings' && method === 'POST') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const n = await replayAllRatings(env.DB); // reset everyone, replay full history
-    await audit(env.DB, 'admin_recalc', null, 'ratings replayed for ' + n + ' users');
+    await audit(env.DB, 'admin_recalc', admin.id, 'ratings replayed for ' + n + ' users');
     return json({ ok: true, users: n });
   }
 
   if (pathname === '/api/admin/players' && method === 'GET') {
-    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const admin = await requireAdmin(request, env);
     const { results } = await env.DB.prepare(
       `SELECT id, username, nickname, glicko_rating, glicko_rd,
               ranked_wins, ranked_losses, casual_wins, casual_losses, created_at, last_played_at

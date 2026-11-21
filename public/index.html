@@ -969,7 +969,6 @@
         <button id="hub-user" class="hub-user btn-ghost" type="button" hidden style="border-radius:999px"></button>
         <button id="hub-admin-chip" class="hub-adminchip hub-bell" type="button" hidden>ADMIN<span id="hub-admin-n" class="bell-n adm-n" hidden></span></button>
         <button id="hub-bell" class="btn ghost tiny hub-bell" type="button" hidden title="Account &amp; notifications">👤<span id="hub-bell-n" class="bell-n" hidden></span></button>
-        <button id="hub-admin-btn" class="btn ghost tiny" type="button" title="Admin unlock">🔒</button>
       </div>
       <div id="queue-hours" class="hours" hidden></div>
 
@@ -1108,7 +1107,8 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
-              <div class="cl-item"><span class="chip">PR61</span><span>Admins can ban a player from skip-voting — banned players lose the Skip button, and the ban hits instantly</span></div>
+                <div class="cl-item"><span class="chip">PR69</span><span>Admin is now per-account — sign in with an admin account and the admin page is right there (no more shared admin PIN)</span></div>
+                <div class="cl-item"><span class="chip">PR61</span><span>Admins can ban a player from skip-voting — banned players lose the Skip button, and the ban hits instantly</span></div>
               <div class="cl-item"><span class="chip">PR59</span><span>The table card predicts the matchup — "Alice's team has a 73% chance of winning" from the Glicko math (hidden when guests or too close to call)</span></div>
               <div class="cl-item"><span class="chip">PR58</span><span>Table card rework: full-width player cards — nickname + rank over @username + rating — stacked with a VS divider between teams</span></div>
               <div class="cl-item"><span class="chip">PR56</span><span>Admins now see a pending-match count on the ADMIN tag and the admin page</span></div>
@@ -1190,7 +1190,7 @@
         <button id="adm-back" class="btn ghost tiny" type="button">← Back</button>
         <h2>Admin</h2>
         <span class="spacer"></span>
-        <span class="badge">PIN UNLOCKED</span>
+        <span class="badge">ADMIN ACCOUNT</span>
       </div>
 
       <div class="sec-h">Queue status</div>
@@ -1551,19 +1551,21 @@ const Hub = (() => {
   }
   const JSON_HDR = { 'content-type': 'application/json' };
   let token = localStorage.getItem(TOKEN_KEY) || null;
-  let me = null;            // {id, username, nickname}
-  let adminPin = null;      // session-only admin unlock
+  let me = null;            // {id, username, nickname, is_admin}
   let pollT = 0;
   const pollStamp = { board: 0, log: 0 }; // last POLL-driven board/log fetch (near-static data: 30s cadence)
   let tab = 'queue';
   const userCache = new Map(); // username(lower) -> id
 
+  /* T24: admin is a per-account flag — a signed-in is_admin session is always
+     admin (no unlock, no PIN). The server still traps the old PIN on
+     /admin/unlock + the poll paths for cached pre-T24 clients. */
+  const isAdminUser = () => !!(me && !me.guest && me.is_admin);
   async function api(path, opts = {}) {
     if (queueKey && Date.now() - queueKeyAt > keyTtlMs) queueKey = null; // expired -> rescan
     const headers = { ...(opts.headers || {}) };
     if (opts.body != null) headers['content-type'] = 'application/json';
     if (token) headers.authorization = 'Bearer ' + token;
-    if (adminPin) headers['x-admin-pin'] = adminPin;
     if (queueKey) headers['x-queue-key'] = queueKey;
     const res = await fetch('/api' + path, {
       ...opts,
@@ -1646,8 +1648,17 @@ const Hub = (() => {
     $('#hub-bell').hidden = me.guest; // guests have no account -> no notifications
     $('#drawer-account').hidden = !!me.guest; // account editor is account-holders only
     $('#me-pending').hidden = !!me.guest;
+    setAdminChrome();
     buildLogSlots();
     refreshAll();
+  }
+
+  /* ADMIN tag in the header: shown while the signed-in account is flagged.
+     The queue poll syncs me.is_admin, so a flag flipped server-side shows up
+     on the next 5s tick — no re-login needed. */
+  function setAdminChrome() {
+    $('#hub-admin-chip').hidden = !isAdminUser();
+    if (!isAdminUser()) setAdminPend(0);
   }
 
   /* guests have no account drawer — the user chip drops them back to the gate */
@@ -1712,7 +1723,7 @@ const Hub = (() => {
   }));
 
   $('#a-signout').addEventListener('click', () => {
-    token = null; me = null; adminPin = null;
+    token = null; me = null;
     setAdminPend(0);
     localStorage.removeItem(TOKEN_KEY);
     $('#hub-gate').hidden = false;
@@ -1720,33 +1731,7 @@ const Hub = (() => {
     $('#hub-user').hidden = true;
     $('#hub-bell').hidden = true;
     $('#hub-admin-chip').hidden = true;
-    $('#hub-admin-btn').textContent = '🔒';
     switchTab('queue');
-  });
-  function setAdminUI(unlocked) {
-    $('#hub-admin-btn').textContent = unlocked ? '🔓' : '🔒';
-    $('#hub-admin-chip').hidden = !unlocked;
-  }
-  $('#hub-admin-btn').addEventListener('click', async () => {
-    if (adminPin) { // tap again to lock
-      adminPin = null;
-      setAdminUI(false);
-      setAdminPend(0);
-      if (tab === 'me') refreshDrawer();
-      return;
-    }
-    const pin = prompt('Admin PIN');
-    if (pin === null || pin === '') return;
-    try {
-      // honeypot (2026-11-21 compromise): the shared PIN never unlocks. The
-      // server always fails with the same message — and logs the burned
-      // pre-rotation PIN as an infraction. adminPin stays unset, so no
-      // request carries the header. T24 replaces this gate with per-user
-      // admin accounts; if that ever 200s, the chrome flips back on.
-      await api('/admin/unlock', { method: 'POST', headers: JSON_HDR, body: { pin } });
-      setAdminUI(true);
-      if (tab === 'me') refreshDrawer();
-    } catch (ex) { alert(ex.message); }
   });
 
   $('#hub-admin-chip').addEventListener('click', () => showScreen('adminpage'));
@@ -1896,6 +1881,11 @@ const Hub = (() => {
       teamupOut = r.teamup_out || null;
       inviteIn = r.invite_in || null;
       skipBanned = r.skip_banned === true;
+      // is_admin rides the poll: flag flips (grant/revoke) apply live
+      if (me && !me.guest && r.is_admin !== undefined && r.is_admin !== !!me.is_admin) {
+        me.is_admin = r.is_admin;
+        setAdminChrome();
+      }
     } catch { parties = null; }
     renderQueue();
   }
@@ -2536,7 +2526,7 @@ const Hub = (() => {
         result.append(el('span', 'sep', 'def.'));
         result.append(document.createTextNode(m.winner_team === 1 ? t2 : t1));
         card.append(top, result);
-        if (adminPin) { // inline admin tools on committed history
+        if (isAdminUser()) { // inline admin tools on committed history
           const tools = el('div', 'adm-tools');
           tools.append(actBtn('⇄ Flip', async () => {
             const to = m.winner_team === 1 ? 2 : 1;
@@ -2700,7 +2690,7 @@ const Hub = (() => {
     const mineBox = $('#me-mine');
     if (!mineBox) return;
     mineBox.innerHTML = '';
-    $('#a-admin-page').hidden = !adminPin;
+    $('#a-admin-page').hidden = !isAdminUser();
     try {
       const { mine } = await api('/pending'); // full rosters, fetched only with the tab open
       setBell(mine.length);
@@ -2778,16 +2768,16 @@ const Hub = (() => {
     b.textContent = n > 9 ? '9+' : n;
   }
 
-  /* admin pending counter: header 🔒/🔓 chip + admin page section chip.
-     The light poll only returns the admin list while the pin is unlocked,
-     so both chips stay hidden until then. */
+  /* admin pending counter: header ADMIN chip + admin page section chip.
+     The light poll only returns the admin list to a flagged account's
+     session, so both chips stay hidden otherwise. */
   function setAdminPend(n) {
-    const show = adminPin && n > 0;
+    const show = isAdminUser() && n > 0;
     const b = $('#hub-admin-n');
     b.hidden = !show;
     b.textContent = n > 9 ? '9+' : n;
     const s = $('#adm-pend-n');
-    s.hidden = !(adminPin && n);
+    s.hidden = !(isAdminUser() && n);
     s.textContent = n > 9 ? '9+' : n;
   }
 
@@ -2823,7 +2813,7 @@ const Hub = (() => {
     let liveSig = ''; // id:status:position of live parties, as last rendered
 
     async function refresh() {
-      if (!adminPin) return;
+      if (!isAdminUser()) return;
       // mode switcher + schedule prefill from live config
       await refreshQueue();
       ['open', 'duo_start', 'duo_end', 'close'].forEach(k => {
@@ -2869,7 +2859,7 @@ const Hub = (() => {
           pend.append(el('div', 'adm-sub-h', 'Awaiting confirmations'));
           pending.forEach(n => pend.append(mkCard(n)));
         }
-      } catch { pend.append(el('div', 'fine', 'Admin pin required.')); }
+      } catch { pend.append(el('div', 'fine', 'Admin only.')); }
 
       // queue access QR (lazy-loads a local-generation QR lib from CDN — key never leaves the browser)
       try {
@@ -3141,7 +3131,7 @@ const Hub = (() => {
           row.append(el('span', 'w', fmtWhen(t.created_at)));
           pintries.append(row);
         });
-      } catch { skips.append(el('div', 'fine', 'Admin pin required.')); }
+      } catch { skips.append(el('div', 'fine', 'Admin only.')); }
     }
 
     /* skip ban list: revoke skip-vote rights (registered players only —
@@ -3194,7 +3184,7 @@ const Hub = (() => {
   async function refreshAll(polling = false) {
     if (!me) return;
     await refreshQueue();
-    if (app.screen === 'adminpage' && adminPin) AdminPage.syncLive(); // keep admin cards honest
+    if (app.screen === 'adminpage' && isAdminUser()) AdminPage.syncLive(); // keep admin cards honest
     // board/log are near-static history — the 5s poll refreshes them at most
     // every 30s (tab switches and explicit refreshes fetch instantly: polling=false)
     if (tab === 'board' && (!polling || Date.now() - pollStamp.board >= 30000)) {
