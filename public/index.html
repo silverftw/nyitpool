@@ -1124,6 +1124,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+                <div class="cl-item"><span class="chip">PR72</span><span>The queue now closes on weekends — open Monday–Friday only; an admin can still force it open any day</span></div>
                 <div class="cl-item"><span class="chip">PR71</span><span>Ranks now lists every registered player — 10 per page with a "Page N of M" pager; the podium stays on page 1 and rank numbers &amp; tiers keep counting from the true top</span></div>
                 <div class="cl-item"><span class="chip">PR69</span><span>Admin is now per-account — sign in with an admin account and the admin page is right there (no more shared admin PIN)</span></div>
                 <div class="cl-item"><span class="chip">PR61</span><span>Admins can ban a player from skip-voting — banned players lose the Skip button, and the ban hits instantly</span></div>
@@ -1965,7 +1966,9 @@ const Hub = (() => {
     const adminTag = qMode.override ? ' · ADMIN SET' : '';
     if (qMode.mode === 'offline') {
       b.classList.add('closed');
-      b.textContent = '⛔ Queue OFFLINE' + adminTag + ` — opens ${fmt12(s.open)} ET`;
+      b.textContent = queueWeekendET() && !qMode.override
+        ? '⛔ Queue closed for the weekend — back Monday 9am ET'
+        : '⛔ Queue OFFLINE' + adminTag + ` — opens ${fmt12(s.open)} ET`;
     } else if (qMode.mode === 'duo-only') {
       b.classList.add('duo-only');
       b.textContent = '🕒 Queue open — DUO ONLY' + adminTag + ` (solo returns ${fmt12(s.duo_end)})`;
@@ -1991,6 +1994,14 @@ const Hub = (() => {
     $('.row2', joinCard).style.gridTemplateColumns = wantSolo ? '1fr' : '1fr 1fr';
     if (qMode.mode === 'duo-only' && wantSolo) $('#join-format [data-v="duo"]').click();
   }
+
+  /* weekend queue close (server gates the real state; this only picks the
+     banner copy) — re-check when the tab comes back to the foreground so a
+     phone that slept over the midnight/weekend edge re-renders */
+  const queueWeekendET = () =>
+    ['Sat', 'Sun'].includes(
+      new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short' }).format(new Date()));
+  document.addEventListener('visibilitychange', () => { if (!$('#queue-hours').hidden) renderHours(); });
 
   /* table-card player card: avatar pip (green=registered, grey=guest) + two
      lines — nickname + rank badge over @username + rating (rank from the shared
@@ -2336,7 +2347,9 @@ const Hub = (() => {
     if (!waiting.length) {
       const empty = el('div', 'q-empty');
       if (qMode.mode === 'offline') {
-        empty.innerHTML = '<span class="big">Queue offline</span>Opens 9am ET — or an admin can bring it online.';
+        empty.innerHTML = queueWeekendET()
+          ? '<span class="big">Queue closed</span>Closed for the weekend — back Monday 9am ET.'
+          : '<span class="big">Queue offline</span>Opens 9am ET — or an admin can bring it online.';
       } else {
         empty.innerHTML = playing.length
           ? 'Nobody waiting — table is covered.'
