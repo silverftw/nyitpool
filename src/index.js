@@ -1779,11 +1779,29 @@ async function handleApi(request, env, url) {
   if (pathname === '/api/leaderboard' && method === 'GET') {
     // Placement players (<10 ranked games) sort below every placed player,
     // even with a higher rating; each group is ordered by rating DESC.
+    const LB_ORDER =
+      'ORDER BY (ranked_wins + ranked_losses) >= 10 DESC, glicko_rating DESC';
+    // ?page=N -> 10-per-page slice with total + rank_base (the Ranks pager);
+    // no page param -> legacy top-50 shape (table-card badge cache, curl suites)
+    if (url.searchParams.has('page')) {
+      const page = Math.max(1, Number(url.searchParams.get('page')) || 1);
+      const PER = 10;
+      // users is small — a PK-scan COUNT is fine and keeps the pager exact
+      const total = (await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first()).n;
+      const { results } = await env.DB.prepare(
+        `SELECT id, username, nickname, glicko_rating, glicko_rd,
+                ranked_wins, ranked_losses, casual_wins, casual_losses
+         FROM users
+         ${LB_ORDER}
+         LIMIT ? OFFSET ?`
+      ).bind(PER, (page - 1) * PER).all();
+      return json({ leaderboard: results, total, page, rank_base: (page - 1) * PER });
+    }
     const { results } = await env.DB.prepare(
       `SELECT id, username, nickname, glicko_rating, glicko_rd,
               ranked_wins, ranked_losses, casual_wins, casual_losses
        FROM users
-       ORDER BY (ranked_wins + ranked_losses) >= 10 DESC, glicko_rating DESC
+       ${LB_ORDER}
        LIMIT 50`
     ).all();
     return json({ leaderboard: results });
