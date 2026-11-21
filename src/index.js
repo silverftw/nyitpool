@@ -89,14 +89,19 @@ async function watchedPrefix(db, ip) {
   return rows.results.map(r => r.prefix).find(p => ip.startsWith(p)) || null;
 }
 
-/* Record an auth attempt: every one lands in audit_log; watched prefixes are
-   flagged as their own row type + a console warning (surfaces in Workers Logs). */
+/* Record an auth attempt: every one lands in audit_log (redacted) AND
+   login_history (full detail, admin-only query) — see migration 0012. */
 async function auditAuth(env, kind, username, request, ok, userId = null) {
   const ip = clientIp(request);
   let hit = null;
   try { hit = await watchedPrefix(env.DB, ip); } catch { /* watchlist must never break auth */ }
   await audit(env.DB, hit ? 'watchlist_hit' : 'auth_ip',
     userId, `${kind} @${username} ip=${ip}${hit ? ' matched=***' : ''}${ok ? '' : ' FAILED'}`);
+  try {
+    await env.DB.prepare(
+      'INSERT INTO login_history (at, kind, username, user_id, ip, ok, matched_prefix) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(Date.now(), kind, username, userId, ip, ok ? 1 : 0, hit).run();
+  } catch { /* history must never break auth */ }
   if (hit) console.warn(`WATCHLIST HIT: ${kind} @${username} ip=${ip}${ok ? '' : ' (failed auth)'}`);
 }
 
@@ -1550,6 +1555,23 @@ async function handleApi(request, env, url) {
     ).bind(prefix, String(body?.note || '').slice(0, 120), Date.now()).run();
     await audit(env.DB, 'watchlist_add', null, prefix.slice(0, 30));
     return json({ ok: true, added: prefix });
+  }
+
+  /* ---------- admin: login history (see migration 0012) ---------- */
+  if (pathname === '/api/admin/login-history' && method === 'GET') {
+    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const url = new URL(request.url);
+    const ip = url.searchParams.get('ip');
+    const username = url.searchParams.get('username');
+    const limit = Math.min(Number(url.searchParams.get('limit')) || 200, 1000);
+    let sql = 'SELECT at, kind, username, user_id, ip, ok, matched_prefix FROM login_history';
+    const conds = [], binds = [];
+    if (ip) { conds.push('ip = ?'); binds.push(ip); }
+    if (username) { conds.push('username = ?'); binds.push(username.toLowerCase()); }
+    if (conds.length) sql += ' WHERE ' + conds.join(' AND ');
+    sql += ' ORDER BY at DESC LIMIT ?'; binds.push(limit);
+    const { results } = await env.DB.prepare(sql).bind(...binds).all();
+    return json({ logins: results });
   }
 
   if (pathname === '/api/admin/skip-bans' && method === 'POST') {
