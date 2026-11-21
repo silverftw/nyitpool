@@ -72,6 +72,40 @@ async function issueToken(uid, env) {
   return sign({ uid, exp: Date.now() + 30 * 24 * 3600 * 1000 }, sessionSecret(env));
 }
 
+/* ============================ auth IP watchlist ============================ */
+/* 2026-11-21 admin-pin compromise: known attacker source IPs. Residential/
+   mobile addresses rotate (CGNAT, DHCPv6), so we match by prefix, not exact
+   IP — a hit is a lead, not proof. Every auth attempt from a watched prefix
+   writes an audit_log row with the account + IP so a compromised main account
+   identifies itself the moment its owner signs in. Prefix list reviewed after
+   the incident is closed; never auto-ban on a watchlist hit. */
+const WATCHED_IP_PREFIXES = [
+  '51.158.254.168',        // Scaleway Amsterdam — scripted fake-match bot
+  '66.108.29.182',         // Charter residential (NYC area)
+  '2603:7000:4500:5a3b:',  // Charter residential (IPv6)
+  '2607:fb91:309c:3c8:',   // Charter residential (IPv6)
+  '2607:fb90:e88b:890a:',  // T-Mobile mobile (IPv6)
+  '2603:7001:e1f0:25c0:',  // T-Mobile mobile (IPv6)
+];
+
+function clientIp(request) {
+  return request.headers.get('cf-connecting-ip') || request.headers.get('x-real-ip') || 'unknown';
+}
+
+function watchedPrefix(ip) {
+  return WATCHED_IP_PREFIXES.find(p => ip.startsWith(p)) || null;
+}
+
+/* Record an auth attempt: every one lands in audit_log; watched prefixes are
+   flagged as their own row type + a console warning (surfaces in Workers Logs). */
+async function auditAuth(env, kind, username, request, ok, userId = null) {
+  const ip = clientIp(request);
+  const hit = watchedPrefix(ip);
+  await audit(env.DB, hit ? 'watchlist_hit' : 'auth_ip',
+    userId, `${kind} @${username} ip=${ip}${hit ? ' matched=' + hit : ''}${ok ? '' : ' FAILED'}`);
+  if (hit) console.warn(`WATCHLIST HIT: ${kind} @${username} ip=${ip} matched=${hit}${ok ? '' : ' (failed auth)'}`);
+}
+
 async function currentUser(request, env) {
   const h = request.headers.get('authorization') || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
@@ -662,6 +696,7 @@ async function handleApi(request, env, url) {
         'INSERT INTO users (username, nickname, pin_hash, pin_salt, created_at) VALUES (?, ?, ?, ?, ?)'
       ).bind(username, nickname, pinHash, salt, Date.now()).run();
       await audit(env.DB, 'register', meta.last_row_id, '@' + username);
+      await auditAuth(env, 'register', username, request, true, meta.last_row_id);
       return json({ token: await issueToken(meta.last_row_id, env),
         user: { id: meta.last_row_id, username, nickname } }, 201);
     } catch (e) {
@@ -675,9 +710,10 @@ async function handleApi(request, env, url) {
     const username = String(body?.username || '').trim().toLowerCase();
     const pin = String(body?.pin || '');
     const user = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
-    if (!user) return bad('wrong username or pin', 401);
+    if (!user) { await auditAuth(env, 'login', username, request, false); return bad('wrong username or pin', 401); }
     const hash = await pbkdf2(pin, user.pin_salt);
-    if (hash !== user.pin_hash) return bad('wrong username or pin', 401);
+    if (hash !== user.pin_hash) { await auditAuth(env, 'login', username, request, false, user.id); return bad('wrong username or pin', 401); }
+    await auditAuth(env, 'login', username, request, true, user.id);
     return json({ token: await issueToken(user.id, env),
       user: { id: user.id, username: user.username, nickname: user.nickname } });
   }
