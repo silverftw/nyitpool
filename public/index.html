@@ -2530,10 +2530,9 @@ const Hub = (() => {
             await api('/admin/matches/' + m.id, { method: 'PUT', body: { winner_team: to } });
             refreshHistory();
           }, 'Flip winner', 'btn tiny'));
-          tools.append(actBtn(m.match_type === 'casual' ? '→ Ranked' : '→ Casual', async () => {
-            const to = m.match_type === 'casual' ? 'ranked' : 'casual';
-            if (!confirm('Convert match #' + m.id + ' from ' + m.match_type + ' to ' + to + '? All ratings & W-L are recomputed from history.')) return;
-            await api('/admin/matches/' + m.id, { method: 'PUT', body: { match_type: to } });
+          if (m.match_type === 'casual') tools.append(actBtn('→ Ranked', async () => { // ranked-only since #21 — no casual flip back
+            if (!confirm('Convert match #' + m.id + ' from casual to ranked? All ratings & W-L are recomputed from history.')) return;
+            await api('/admin/matches/' + m.id, { method: 'PUT', body: { match_type: 'ranked' } });
             refreshHistory();
           }, 'Switch match type', 'btn tiny'));
           tools.append(actBtn('✕', async () => {
