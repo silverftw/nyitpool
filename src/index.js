@@ -172,7 +172,7 @@ function nyMinutes(env) {
   return h * 60 + min;
 }
 
-/* ET weekday, 0=Sun..6=Sat — used by the no-logging-Fridays rule */
+/* ET weekday, 0=Sun..6=Sat — used by the no-logging-Fridays rule + weekend queue close */
 function nyWeekday(env) {
   const m = TTO_RE.exec(env.TEST_TIME_OVERRIDE || '');
   if (m && m[1]) return new Date(m[1] + 'T12:00:00Z').getUTCDay();
@@ -181,6 +181,8 @@ function nyWeekday(env) {
 }
 
 function windowMode(env, sched) {
+  const wd = nyWeekday(env);
+  if (wd === 0 || wd === 6) return 'offline'; // closed weekends (Sat/Sun) — admin override still wins
   const t = nyMinutes(env);
   if (t < hm(sched.open) || t >= hm(sched.close)) return 'offline';
   if (hm(sched.duo_start) < hm(sched.duo_end) && t >= hm(sched.duo_start) && t < hm(sched.duo_end)) return 'duo-only';
