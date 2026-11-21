@@ -1107,6 +1107,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+              <div class="cl-item"><span class="chip">PR61</span><span>Admins can ban a player from skip-voting — banned players lose the Skip button, and the ban hits instantly</span></div>
               <div class="cl-item"><span class="chip">PR59</span><span>The table card predicts the matchup — "Alice's team has a 73% chance of winning" from the Glicko math (hidden when guests or too close to call)</span></div>
               <div class="cl-item"><span class="chip">PR58</span><span>Table card rework: full-width player cards — nickname + rank over @username + rating — stacked with a VS divider between teams</span></div>
               <div class="cl-item"><span class="chip">PR56</span><span>Admins now see a pending-match count on the ADMIN tag and the admin page</span></div>
@@ -1242,6 +1243,16 @@
       <div class="sec-h">Recently skipped</div>
       <p class="fine" style="margin:-6px 0 0">Every party voted off the table in the last 7 days, with who voted.</p>
       <div id="adm-skips" style="display:flex;flex-direction:column;gap:10px"></div>
+
+      <div class="sec-h">Skip ban list</div>
+      <p class="fine" style="margin:-6px 0 0">Players banned from voting to skip parties. Registered accounts only — guests have no identity to ban. Add/remove takes effect instantly.</p>
+      <div class="aslot" style="margin:8px 0">
+        <span class="lb">Who</span>
+        <input id="adm-ban-user" maxlength="24" placeholder="search player…" autocomplete="off">
+        <input id="adm-ban-note" maxlength="140" placeholder="note (optional) — why" style="flex:1.2">
+        <button id="adm-ban-add" class="btn tiny danger" type="button" title="Ban this player from skip-voting">Ban</button>
+      </div>
+      <div class="hist-wrap"><table class="simple" id="adm-bans"></table></div>
     </div>
   </section>
 
@@ -1863,6 +1874,7 @@ const Hub = (() => {
   let partnerFor = null;    // party id whose find-a-partner sheet is open
   let partnerPopSig = null; // sheet DOM rebuilt only when party/pickup state changes
   let partnerSub = null;    // open sub-form inside the sheet: 'req' | 'guest'
+  let skipBanned = false;   // admin banned me from skip-voting -> Skip buttons hidden (server 403s anyway)
   let qKey = { required: false, valid: true };
   let qMode = { mode: 'open', override: null, schedule: { open: '09:00', duo_start: '12:00', duo_end: '18:00', close: '21:00' } };
   const fmt12 = hhmm => {
@@ -1882,6 +1894,7 @@ const Hub = (() => {
       teamupIn = r.teamup_in || null;
       teamupOut = r.teamup_out || null;
       inviteIn = r.invite_in || null;
+      skipBanned = r.skip_banned === true;
     } catch { parties = null; }
     renderQueue();
   }
@@ -2243,7 +2256,8 @@ const Hub = (() => {
           }
         }, null, 'btn tiny danger'));
         // table skip vote: three people can vote a stuck party off the table
-        if (me && !me.guest && !mineIn(p)) {
+        // (banned users don't get the button — the vote route 403s as backstop)
+        if (me && !me.guest && !skipBanned && !mineIn(p)) {
           btns.append(actBtn('Skip ' + p.votes + '/3', () => voteSkip(p),
             'Vote to skip ' + (p.p1 ? p.p1.name : 'this party') + ' off the table', 'btn tiny'));
         }
@@ -2309,7 +2323,7 @@ const Hub = (() => {
       if (p.pickup_open) side.append(el('span', 'chip ok', 'PICKUP OPEN'));
       if (me && !me.guest && p.p1) { // skip votes need an account and a real party
         side.append(skipDots(p.votes, p.p1.name));
-        if (!mine) // backend rejects self-votes — don't offer the button
+        if (!mine && !skipBanned) // backend rejects self-votes; banned users get no button either
           side.append(actBtn('Skip ' + p.votes + '/3', () => voteSkip(p),
             'Vote to skip ' + p.p1.name + ' off the table', 'btn tiny'));
       }
@@ -3087,10 +3101,47 @@ const Hub = (() => {
       } catch { box.append(el('div', 'fine', 'Admin pin required.')); }
     }
 
+    /* skip ban list: revoke skip-vote rights (registered players only —
+       guests have no persistent identity to ban) */
+    const banInput = $('#adm-ban-user');
+    const banNote = $('#adm-ban-note');
+    async function refreshBans() {
+      let bans = [];
+      try { bans = (await api('/admin/skip-bans')).bans; } catch { /* pin */ }
+      fillTable('#adm-bans', ['Player', 'Note', 'Banned', ''],
+        bans.map(b => {
+          const nm = document.createDocumentFragment();
+          nm.append(el('b', null, b.nickname));
+          nm.append(el('small', 'at', ' @' + b.username));
+          const rm = actBtn('✕', async () => {
+            if (!confirm('Unban ' + b.nickname + '? They can vote to skip parties again.')) return;
+            try {
+              await api('/admin/skip-bans/' + b.user_id, { method: 'DELETE' });
+              refreshBans();
+            } catch (ex) { alert(ex.message); }
+          }, 'Remove skip ban', 'btn tiny danger rm-btn');
+          return [nm, b.note || '—', fmtWhen(b.created_at), rm];
+        }));
+    }
+    $('#adm-ban-add').addEventListener('click', async () => {
+      const uid = Number(banInput.dataset.uid);
+      if (!uid) return alert('Pick a registered player from the search first.');
+      try {
+        await api('/admin/skip-bans', {
+          method: 'POST',
+          body: { user_id: uid, note: banNote.value.trim() || undefined },
+        });
+        banInput.value = ''; delete banInput.dataset.uid; banNote.value = '';
+        refreshBans();
+      } catch (ex) { alert(ex.message); }
+    });
+    mkPicker(banInput);
+
     async function refreshTail() {
       await refreshPlayers();
       await refreshAudit();
       await refreshSkips();
+      await refreshBans();
     }
 
     return { refresh, syncLive };
