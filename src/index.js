@@ -784,7 +784,7 @@ async function handleApi(request, env, url) {
     // own sent request, if any
     await sweepQueueIfDue(env.DB);
     const user = await currentUser(request, env);
-    let teamupIn = null, teamupOut = null, inviteIn = null;
+    let teamupIn = null, teamupOut = null, inviteIn = null, skipBanned = false;
     if (user) {
       const inRow = await env.DB.prepare(
         `SELECT r.id, r.party_id, r.created_at, u.id AS requester_id, u.nickname, u.username,
@@ -823,11 +823,16 @@ async function handleApi(request, env, url) {
         inviter: invRow.req_nick || invRow.req_guest || 'Someone',
         created_at: invRow.created_at, expires_at: invRow.created_at + TEAMUP_TTL_MS,
       };
+      // am I banned from skip-voting? (cheap PK lookup riding the poll — the
+      // client hides the Skip buttons; the vote route is the 403 backstop)
+      skipBanned = !!(await env.DB.prepare('SELECT user_id FROM skip_bans WHERE user_id = ?')
+        .bind(user.id).first());
     }
     return json({ parties: results.map(shapeParty), table_win_prob: tableWinProb(results),
       mode: eff.mode, override: eff.override, schedule: eff.schedule,
       key_required: !!env.QUEUE_KEY, key_valid: await validQueueKey(request, env),
-      key_ttl_ms: QUEUE_KEY_TTL_MS, teamup_in: teamupIn, teamup_out: teamupOut, invite_in: inviteIn });
+      key_ttl_ms: QUEUE_KEY_TTL_MS, teamup_in: teamupIn, teamup_out: teamupOut, invite_in: inviteIn,
+      skip_banned: !!skipBanned });
   }
 
   if (pathname === '/api/queue/join' && method === 'POST') {
@@ -998,6 +1003,10 @@ async function handleApi(request, env, url) {
     const id = Number(m[1]);
     const party = await env.DB.prepare('SELECT * FROM queue_parties WHERE id = ?').bind(id).first();
     if (!party || !['waiting', 'playing'].includes(party.status)) return bad('not found', 404);
+    // ban checked live at vote time — an unban takes effect on the very next vote
+    if (await env.DB.prepare('SELECT user_id FROM skip_bans WHERE user_id = ?').bind(user.id).first()) {
+      return bad('you are not allowed to skip parties', 403);
+    }
     if (party.p1_user_id === user.id || party.p2_user_id === user.id) {
       return bad("can't vote to skip your own party");
     }
@@ -1458,6 +1467,48 @@ async function handleApi(request, env, url) {
       });
     }
     return json({ skips });
+  }
+
+  /* ---------- skip ban list: revoke a user's skip-vote rights ----------
+     Registered users only — guests have no persistent identity to ban.
+     The vote route re-checks the table live, so add/remove is instant. */
+  if (pathname === '/api/admin/skip-bans' && method === 'GET') {
+    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const { results } = await env.DB.prepare(
+      `SELECT b.user_id, b.created_at, b.note, u.nickname, u.username
+       FROM skip_bans b JOIN users u ON u.id = b.user_id
+       ORDER BY b.created_at DESC, b.user_id DESC LIMIT 200`
+    ).all();
+    return json({ bans: results });
+  }
+
+  if (pathname === '/api/admin/skip-bans' && method === 'POST') {
+    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const body = await request.json().catch(() => null);
+    const uid = Number(body?.user_id);
+    if (!uid) return bad('user_id required');
+    const target = await env.DB.prepare('SELECT id, nickname, username FROM users WHERE id = ?').bind(uid).first();
+    if (!target) return bad('player not found', 404);
+    const note = body?.note != null ? String(body.note).trim().slice(0, 140) : null;
+    try {
+      await env.DB.prepare('INSERT INTO skip_bans (user_id, created_at, note) VALUES (?, ?, ?)')
+        .bind(uid, Date.now(), note || null).run();
+    } catch (ex) {
+      if (String(ex.message).includes('UNIQUE')) return bad('player is already banned', 409);
+      throw ex;
+    }
+    await audit(env.DB, 'skip_ban', null, 'user=' + uid + ' @' + target.username + (note ? ' note=' + note : ''));
+    return json({ ok: true, user_id: uid }, 201);
+  }
+
+  m = pathname.match(/^\/api\/admin\/skip-bans\/(\d+)$/);
+  if (m && method === 'DELETE') {
+    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const uid = Number(m[1]);
+    const res = await env.DB.prepare('DELETE FROM skip_bans WHERE user_id = ?').bind(uid).run();
+    if (!res.meta.changes) return bad('player is not banned', 404);
+    await audit(env.DB, 'skip_unban', null, 'user=' + uid);
+    return json({ ok: true });
   }
 
   if (pathname === '/api/notifications' && method === 'GET') {
