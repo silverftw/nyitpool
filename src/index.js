@@ -487,6 +487,58 @@ async function audit(db, type, actorUserId, detail = '') {
   } catch { /* audit must never break the request */ }
 }
 
+/* ============================ moderation events (T25 honeypot) ============================ */
+/* The shared admin PIN is burned (2026-11-21 compromise). The 🔒 unlock prompt
+   is now a honeypot: it NEVER unlocks. Anyone who submits the OLD pre-rotation
+   PIN gets a mod_events infraction — tied to their account when signed in,
+   IP-only otherwise. Honest typos (any other PIN) are not logged. The value is
+   a plain const on purpose: it's a burned password, and the ROADMAP records it
+   too — secrecy no longer matters, only the paper trail does. */
+const OLD_ADMIN_PIN = '9182';
+
+async function logModEvent(env, kind, userId, request, detail) {
+  try {
+    await env.DB.prepare(
+      'INSERT INTO mod_events (kind, user_id, ip, detail, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).bind(kind, userId, clientIp(request), detail, Date.now()).run();
+  } catch { /* moderation logging must never break the request */ }
+}
+
+/* every recently skipped party with the voters named — shared verbatim by
+   /api/admin/skip-history and the Moderation Notifications skip feed */
+async function recentSkips(db) {
+  const week = Date.now() - 7 * 24 * 3600 * 1000;
+  const { results: rows } = await db.prepare(
+    `SELECT p.id, p.format, MAX(v.created_at) AS skipped_at,
+            p.p1_user_id, p.p1_guest_name, u1.nickname AS p1_nick, u1.username AS p1_user,
+            p.p2_user_id, p.p2_guest_name, u2.nickname AS p2_nick, u2.username AS p2_user
+     FROM queue_parties p
+     JOIN skip_votes v ON v.party_id = p.id
+     LEFT JOIN users u1 ON u1.id = p.p1_user_id
+     LEFT JOIN users u2 ON u2.id = p.p2_user_id
+     WHERE p.status = 'skipped' AND v.created_at > ?1
+     GROUP BY p.id ORDER BY skipped_at DESC LIMIT 20`
+  ).bind(week).all();
+  const skips = [];
+  for (const r of rows) {
+    const { results: voters } = await db.prepare(
+      `SELECT u.nickname, u.username FROM skip_votes v
+       JOIN users u ON u.id = v.voter_user_id
+       WHERE v.party_id = ? ORDER BY v.created_at`
+    ).bind(r.id).all();
+    const member = (uid, nick, uname, guest) => uid
+      ? { name: nick, username: uname, registered: true }
+      : guest ? { name: 'Guest: ' + guest, username: null, registered: false } : null;
+    skips.push({
+      party_id: r.id, format: r.format, skipped_at: r.skipped_at,
+      members: [member(r.p1_user_id, r.p1_nick, r.p1_user, r.p1_guest_name),
+                member(r.p2_user_id, r.p2_nick, r.p2_user, r.p2_guest_name)].filter(Boolean),
+      voters,
+    });
+  }
+  return skips;
+}
+
 /* ============================ match commit ============================ */
 
 /* Recompute EVERY player's Glicko-2 + W/L from the full remaining match history.
@@ -1486,36 +1538,7 @@ async function handleApi(request, env, url) {
      "party must include me" filter */
   if (pathname === '/api/admin/skip-history' && method === 'GET') {
     if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
-    const week = Date.now() - 7 * 24 * 3600 * 1000;
-    const { results: rows } = await env.DB.prepare(
-      `SELECT p.id, p.format, MAX(v.created_at) AS skipped_at,
-              p.p1_user_id, p.p1_guest_name, u1.nickname AS p1_nick, u1.username AS p1_user,
-              p.p2_user_id, p.p2_guest_name, u2.nickname AS p2_nick, u2.username AS p2_user
-       FROM queue_parties p
-       JOIN skip_votes v ON v.party_id = p.id
-       LEFT JOIN users u1 ON u1.id = p.p1_user_id
-       LEFT JOIN users u2 ON u2.id = p.p2_user_id
-       WHERE p.status = 'skipped' AND v.created_at > ?1
-       GROUP BY p.id ORDER BY skipped_at DESC LIMIT 20`
-    ).bind(week).all();
-    const skips = [];
-    for (const r of rows) {
-      const { results: voters } = await env.DB.prepare(
-        `SELECT u.nickname, u.username FROM skip_votes v
-         JOIN users u ON u.id = v.voter_user_id
-         WHERE v.party_id = ? ORDER BY v.created_at`
-      ).bind(r.id).all();
-      const member = (uid, nick, uname, guest) => uid
-        ? { name: nick, username: uname, registered: true }
-        : guest ? { name: 'Guest: ' + guest, username: null, registered: false } : null;
-      skips.push({
-        party_id: r.id, format: r.format, skipped_at: r.skipped_at,
-        members: [member(r.p1_user_id, r.p1_nick, r.p1_user, r.p1_guest_name),
-                  member(r.p2_user_id, r.p2_nick, r.p2_user, r.p2_guest_name)].filter(Boolean),
-        voters,
-      });
-    }
-    return json({ skips });
+    return json({ skips: await recentSkips(env.DB) });
   }
 
   /* ---------- skip ban list: revoke a user's skip-vote rights ----------
@@ -1574,6 +1597,47 @@ async function handleApi(request, env, url) {
     return json({ logins: results });
   }
 
+  /* ---------- admin: moderation notifications (T25) ----------
+     Three feeds in one response: skip history (identical shape to
+     /api/admin/skip-history), flagged-IP sign-in attempts (audit rows the
+     PR #64 auth trap writes as 'auth_ip'/'watchlist_hit') and old-admin-PIN
+     honeypot hits from mod_events. */
+  if (pathname === '/api/admin/mod-events' && method === 'GET') {
+    if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
+    const { results: flagged } = await env.DB.prepare(
+      `SELECT a.at, a.type, a.detail, u.nickname AS actor, u.username AS actor_user
+       FROM audit_log a LEFT JOIN users u ON u.id = a.actor_user_id
+       WHERE a.type IN ('auth_ip', 'watchlist_hit')
+       ORDER BY a.at DESC LIMIT 20`
+    ).all();
+    const { results: pinTries } = await env.DB.prepare(
+      `SELECT m.id, m.created_at, m.user_id, m.ip, m.detail, u.nickname, u.username
+       FROM mod_events m LEFT JOIN users u ON u.id = m.user_id
+       WHERE m.kind = 'old_admin_pin'
+       ORDER BY m.created_at DESC LIMIT 20`
+    ).all();
+    return json({ skips: await recentSkips(env.DB),
+      flagged_logins: flagged, old_pin_attempts: pinTries });
+  }
+
+  /* ---------- admin unlock honeypot (T25) ----------
+     The client's 🔒 prompt posts here. The shared PIN NEVER unlocks anymore:
+     every attempt fails with the exact pre-honeypot failure message so the
+     prompt UX is unchanged (no tip-off), and submitting the OLD compromised
+     PIN additionally lands a mod_events infraction — account-tied when the
+     caller has a session, IP-only when anonymous. All the other admin routes
+     still honor X-Admin-Pin for the current PIN until T24 removes the PIN
+     system entirely; only this validation path is dead by design. */
+  if (pathname === '/api/admin/unlock' && method === 'POST') {
+    const body = await request.json().catch(() => null);
+    const pin = String(body?.pin ?? '') || request.headers.get('x-admin-pin') || '';
+    const user = await currentUser(request, env); // optional — the honeypot must also catch anonymous tries
+    if (pin === OLD_ADMIN_PIN) {
+      await logModEvent(env, 'old_admin_pin', user ? user.id : null, request, 'entered old admin PIN');
+    }
+    return bad('Wrong admin PIN.', 403);
+  }
+
   if (pathname === '/api/admin/skip-bans' && method === 'POST') {
     if (!(await isAdmin(request, env))) return bad('admin pin required', 403);
     const body = await request.json().catch(() => null);
@@ -1612,6 +1676,12 @@ async function handleApi(request, env, url) {
        FROM pending_matches pm JOIN pending_match_players mp ON mp.pending_match_id = pm.id
        WHERE mp.user_id = ? AND mp.confirmed = 0`
     ).bind(user.id).all();
+    // honeypot on the poll path: the pre-T25 client validated the admin PIN by
+    // polling here with the x-admin-pin header — a replayed old client lands
+    // exactly here, so the burned PIN is logged before the gate is read
+    if ((request.headers.get('x-admin-pin') || '') === OLD_ADMIN_PIN) {
+      await logModEvent(env, 'old_admin_pin', user.id, request, 'entered old admin PIN');
+    }
     const admin = await isAdmin(request, env);
     let adminList = null;
     if (admin) {
@@ -1632,6 +1702,10 @@ async function handleApi(request, env, url) {
        FROM pending_matches pm JOIN pending_match_players mp ON mp.pending_match_id = pm.id
        WHERE mp.user_id = ? AND mp.confirmed = 0`
     ).bind(user.id).all()).results;
+    // same poll-path honeypot as /api/notifications (see there)
+    if ((request.headers.get('x-admin-pin') || '') === OLD_ADMIN_PIN) {
+      await logModEvent(env, 'old_admin_pin', user.id, request, 'entered old admin PIN');
+    }
     const admin = await isAdmin(request, env);
     let adminList = null;
     if (admin) {
