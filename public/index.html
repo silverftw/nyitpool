@@ -1124,6 +1124,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+                <div class="cl-item"><span class="chip">PR73</span><span>When the app can't reach the server the queue banner now says so instead of pretending the queue is open</span></div>
                 <div class="cl-item"><span class="chip">PR72</span><span>The queue now closes on weekends — open Monday–Friday only; an admin can still force it open any day</span></div>
                 <div class="cl-item"><span class="chip">PR71</span><span>Ranks now lists every registered player — 10 per page with a "Page N of M" pager; the podium stays on page 1 and rank numbers &amp; tiers keep counting from the true top</span></div>
                 <div class="cl-item"><span class="chip">PR69</span><span>Admin is now per-account — sign in with an admin account and the admin page is right there (no more shared admin PIN)</span></div>
@@ -1921,6 +1922,7 @@ const Hub = (() => {
   let skipBanned = false;   // admin banned me from skip-voting -> Skip buttons hidden (server 403s anyway)
   let qKey = { required: false, valid: true };
   let qMode = { mode: 'open', override: null, schedule: { open: '09:00', duo_start: '12:00', duo_end: '18:00', close: '21:00' } };
+  let qUnreachable = false; // last /queue poll failed -> banner must not claim "Queue open"
   const fmt12 = hhmm => {
     const [h, m] = hhmm.split(':').map(Number);
     const ampm = h >= 12 ? 'pm' : 'am';
@@ -1930,6 +1932,7 @@ const Hub = (() => {
   async function refreshQueue() {
     try {
       const r = await api('/queue');
+      qUnreachable = false;
       parties = r.parties;
       tableWinProb = r.table_win_prob || null;
       qMode = { mode: r.mode, override: r.override, schedule: r.schedule || qMode.schedule };
@@ -1944,7 +1947,7 @@ const Hub = (() => {
         me.is_admin = r.is_admin;
         setAdminChrome();
       }
-    } catch { parties = null; }
+    } catch { parties = null; qUnreachable = true; }
     renderQueue();
   }
 
@@ -1961,6 +1964,12 @@ const Hub = (() => {
     const b = $('#queue-hours');
     b.hidden = false;
     b.classList.remove('duo-only', 'closed');
+    if (qUnreachable) {
+      b.classList.add('closed');
+      b.textContent = "⚠️ Can't reach the queue — pull to refresh";
+      $('#hub-join button[type="submit"]').disabled = true;
+      return;
+    }
     const s = qMode.schedule;
     const span = ` · ${fmt12(s.open)}–${fmt12(s.close)} ET`;
     const adminTag = qMode.override ? ' · ADMIN SET' : '';
