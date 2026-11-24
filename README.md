@@ -1,4 +1,4 @@
-# NYIT Pool
+# Bear Break
 
 Billiards-table portal for the NYIT pool hall: shot clocks, chess-clock game banks, a live table queue with accounts, match confirmations, and Glicko-2 rankings.
 
