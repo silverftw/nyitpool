@@ -1445,7 +1445,6 @@ async function handleApi(request, env, url) {
     if (wd === 0 || wd >= 5) return bad('match logging is off on Fridays and weekends', 403);
     const user = await requireUser(request, env);
     const body = await request.json().catch(() => null);
-    const format = body?.format;
     const winnerTeam = Number(body?.winner_team);
     // matches are always ranked now — casual submissions were removed, so a
     // stale client can't silently log unrated games
@@ -1453,15 +1452,17 @@ async function handleApi(request, env, url) {
       return bad('casual matches are no longer submitted — every match is ranked');
     }
     const matchType = 'ranked';
-    if (!['1v1', '2v2', '2v1'].includes(format)) return bad('format must be 1v1, 2v2 or 2v1');
     if (![1, 2].includes(winnerTeam)) return bad('winner_team must be 1 or 2');
 
-    const sizes = { '1v1': [1, 1], '2v2': [2, 2], '2v1': [2, 1] };
+    // one form, 4 free slots — format is DERIVED from occupancy, never trusted
+    // from the client (any provided `format` is ignored). 1v2 is new; old
+    // bodies (format + exact-size teams) still validate by the same lengths.
     const t1 = Array.isArray(body?.teams?.[1]) ? body.teams[1] : null;
     const t2 = Array.isArray(body?.teams?.[2]) ? body.teams[2] : null;
-    if (!t1 || !t2 || t1.length !== sizes[format][0] || t2.length !== sizes[format][1]) {
-      return bad(`teams must match format ${format}`);
+    if (!t1 || !t2 || !t1.length || !t2.length || t1.length > 2 || t2.length > 2) {
+      return bad('each team needs at least one player (max two per team)');
     }
+    const format = `${t1.length}v${t2.length}`;
     const slots = [...t1.map(p => ({ ...p, team: 1 })), ...t2.map(p => ({ ...p, team: 2 }))];
     for (const s of slots) {
       if (!s || (s.user_id == null && !String(s.guest_name || '').trim())) {

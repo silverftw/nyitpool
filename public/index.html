@@ -1052,14 +1052,9 @@
         <!-- LOG PANE -->
         <div id="tab-log" class="pane" data-pane="log">
           <form id="log-form" class="card" style="display:flex;flex-direction:column;gap:12px" autocomplete="off">
-            <div class="seg" id="log-format">
-              <button type="button" data-v="1v1" class="on">1v1</button>
-              <button type="button" data-v="2v2">2v2</button>
-              <button type="button" data-v="2v1">2v1</button>
-            </div>
             <div class="teambox" id="lt1" style="--tc:var(--t1)"><span class="lbl">Team 1 — you</span><div class="slots"></div></div>
             <div class="teambox" id="lt2" style="--tc:var(--t2)"><span class="lbl">Team 2 — opponents</span><div class="slots"></div></div>
-            <p class="fine" style="margin:0">Type to search players — pick from the list. Unmatched names count as guests; each team needs at least one registered player.</p>
+            <p class="fine" style="margin:0">Type to search players — pick from the list. Unmatched names count as guests. Leave the second slot of a team blank to play solo; each team needs at least one registered player.</p>
             <div class="seg" id="log-winner">
               <button type="button" data-v="1" class="on">Team 1 won</button>
               <button type="button" data-v="2">Team 2 won</button>
@@ -1124,6 +1119,7 @@
           <details class="card changelog">
             <summary>✨ What's new</summary>
               <div style="display:flex;flex-direction:column;gap:7px;margin-top:10px">
+                <div class="cl-item"><span class="chip">PR75</span><span>Log a match with one form — no format picker: fill 1 or 2 names per team and the format (1v1, 1v2, 2v1, 2v2) follows automatically; 1v2 is new</span></div>
                 <div class="cl-item"><span class="chip">PR73</span><span>When the app can't reach the server the queue banner now says so instead of pretending the queue is open</span></div>
                 <div class="cl-item"><span class="chip">PR72</span><span>The queue now closes on weekends — open Monday–Friday only; an admin can still force it open any day</span></div>
                 <div class="cl-item"><span class="chip">PR71</span><span>Ranks now lists every registered player — 10 per page with a "Page N of M" pager; the podium stays on page 1 and rank numbers &amp; tiers keep counting from the true top</span></div>
@@ -1850,11 +1846,10 @@ const Hub = (() => {
     $$('button', root).forEach(b => b.addEventListener('click', () => {
       if (b.disabled) return;
       $$('button', root).forEach(x => x.classList.toggle('on', x === b));
-      if (root.id === 'log-format') buildLogSlots();
       if (root.id === 'join-format') renderHours();
     }));
   }
-  ['#join-format', '#log-format', '#log-winner'].forEach(s => wireSeg($(s)));
+  ['#join-format', '#log-winner'].forEach(s => wireSeg($(s)));
 
   /* ---------- shared player search (autocomplete picker) ----------
      Used by: queue teammate, match form slots, history filter.
@@ -2471,11 +2466,11 @@ const Hub = (() => {
     } catch (ex) { alert(ex.message); }
   });
 
-  /* ---------- tab 2: Matches — log form (you pre-filled) + history ---------- */
+  /* ---------- tab 2: Matches — log form (you pre-filled) + history ----------
+     One form, 4 free slots (2×2): an empty second slot just means that side
+     plays solo — the format (1v1/1v2/2v1/2v2) comes from filled slots alone. */
   function buildLogSlots() {
-    const sizes = { '1v1': [1, 1], '2v2': [2, 2], '2v1': [2, 1] };
-    const [n1, n2] = sizes[segVal($('#log-format'))];
-    [['#lt1', n1], ['#lt2', n2]].forEach(([sel, n]) => {
+    [['#lt1', 2], ['#lt2', 2]].forEach(([sel, n]) => {
       const box = $('.slots', $(sel));
       box.innerHTML = '';
       for (let i = 0; i < n; i++) {
@@ -2491,7 +2486,7 @@ const Hub = (() => {
         const inp = document.createElement('input');
         inp.className = 'name-input';
         inp.maxLength = 24;
-        inp.placeholder = 'search player / guest name';
+        inp.placeholder = 'partner / guest · blank = solo';
         box.append(inp);
         mkPicker(inp);
       }
@@ -2525,10 +2520,15 @@ const Hub = (() => {
       const team = sel === '#lt1' ? 1 : 2;
       for (const inp of $$('.slots input', $(sel))) {
         const v = inp.value.trim();
-        if (!v) { msg.style.color = 'var(--danger)'; msg.textContent = '⚠️ Fill every player slot.'; return; }
+        if (!v) continue; // blank slot = that side plays solo
         if (inp.dataset.uid) teams[team].push({ user_id: Number(inp.dataset.uid) });
         else teams[team].push({ guest_name: v });
       }
+    }
+    if (!teams[1].length || !teams[2].length) {
+      msg.style.color = 'var(--danger)';
+      msg.textContent = '⚠️ Each team needs at least one player.';
+      return;
     }
     if (!teams[2].some(s => s.user_id != null)) {
       msg.style.color = 'var(--danger)';
@@ -2540,7 +2540,6 @@ const Hub = (() => {
         method: 'POST',
         body: {
           match_type: 'ranked',
-          format: segVal($('#log-format')),
           winner_team: Number(segVal($('#log-winner'))),
           teams,
         },
