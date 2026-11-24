@@ -27,4 +27,4 @@ jobs:
         run: npx wrangler deploy --dry-run --outdir=dist
 
       - name: Sanity-check static assets
-        run: test -f public/index.html && grep -q "NYIT Pool" public/index.html
+        run: test -f public/index.html && grep -q "BearBreak" public/index.html
