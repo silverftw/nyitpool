@@ -1,15 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 230 230" role="img" aria-label="BearBreak logo">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 230 230" role="img" aria-label="NYIT Pool 8-ball logo">
   <rect width="230" height="230" rx="34" fill="#1d3f8f"/>
-  <line x1="28" y1="205" x2="202" y2="32" stroke="#e8b923" stroke-width="11" stroke-linecap="round"/>
-  <line x1="186" y1="48" x2="202" y2="32" stroke="#f4ead0" stroke-width="11" stroke-linecap="round"/>
-  <circle cx="75" cy="68" r="22" fill="#111"/>
-  <circle cx="75" cy="68" r="10" fill="#e8b923"/>
-  <circle cx="155" cy="68" r="22" fill="#111"/>
-  <circle cx="155" cy="68" r="10" fill="#e8b923"/>
-  <circle cx="115" cy="120" r="70" fill="#111"/>
-  <ellipse cx="92" cy="96" rx="16" ry="9" fill="#fff" opacity="0.18" transform="rotate(-30 92 96)"/>
-  <circle cx="115" cy="130" r="30" fill="#f4ead0"/>
-  <circle cx="90" cy="110" r="6" fill="#f4ead0"/>
-  <circle cx="140" cy="110" r="6" fill="#f4ead0"/>
-  <text x="115" y="142" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="32" font-weight="600" fill="#111">8</text>
+  <circle cx="115" cy="115" r="88" fill="#111"/>
+  <ellipse cx="86" cy="80" rx="18" ry="10" fill="#fff" opacity="0.18" transform="rotate(-30 86 80)"/>
+  <circle cx="115" cy="115" r="36" fill="#f4ead0"/>
+  <text x="115" y="129" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="42" font-weight="600" fill="#111">8</text>
 </svg>

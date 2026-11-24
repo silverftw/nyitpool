@@ -2,7 +2,7 @@
   "name": "nyitpool",
   "version": "1.0.0",
   "private": true,
-  "description": "BearBreak (NYIT Pool) — billiards timer portal + future table queue. Cloudflare Workers + Static Assets + D1.",
+  "description": "NYIT Pool — billiards timer portal + future table queue. Cloudflare Workers + Static Assets + D1.",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
